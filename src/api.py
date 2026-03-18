@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI):
     if config.telegram_token:
         print("DEBUG: Creating Telegram application...")
         _bot_application = create_telegram_application(agent, config.telegram_token)
-        print("DEBUG: Initializing Telegram application...")
+        print("DEBUG: Initializing Telegram application....")
         await _bot_application.initialize()
         print("DEBUG: Telegram application initialized successfully")
     else:
