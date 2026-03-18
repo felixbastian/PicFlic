@@ -41,6 +41,11 @@ gcloud iam service-accounts add-iam-policy-binding \
   --member="principalSet://iam.googleapis.com/projects/642164961505/locations/global/workloadIdentityPools/github-pool/attribute.repository/felixbastian/PicFlic" \
   --role="roles/iam.workloadIdentityUser"
 
+
+
+
+
+
 gcloud run services add-iam-policy-binding SERVICE \
   --region=europe-west1 \
   --member="allUsers" \

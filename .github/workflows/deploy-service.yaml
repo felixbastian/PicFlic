@@ -50,4 +50,5 @@ jobs:
           service: ${{ env.SERVICE }}
           region: ${{ env.REGION }}
           image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}:${{ github.sha }}
-          service_account: cloud-run-runtime@your-project-id.iam.gserviceaccount.com
+          flags: >-
+            --service-account=cloud-run-runtime@${{ env.PROJECT_ID }}.iam.gserviceaccount.com
