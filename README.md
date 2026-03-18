@@ -1,0 +1,105 @@
+# PictoAgent
+
+A minimal personal agent framework for tracking daily life from photos (food, drinks, etc.).
+
+This project includes:
+- A simple **agent** that takes an image path and produces a lightweight analysis of calories / macros / alcohol.
+- A small **MCP-like layer** (Model Context Protocol) to read/write state from a database.
+- A **langgraph-based pipeline** for the analysis.
+- A **FastAPI REST API** for analyzing images and retrieving stored records.
+- Unit tests and a placeholder folder for sample images.
+
+## Getting Started
+
+1. Create a virtual environment:
+
+   ```bash
+   python3.11 -m venv .venv
+   source .venv/bin/activate
+   pip install -U pip
+   pip install -r requirements.txt
+   cp .env.example .env
+   ```
+
+2. Configure OpenAI credentials in `.env`:
+
+   ```bash
+   OPENAI_API_KEY=your_openai_api_key_here
+   PICTOAGENT_OPENAI_MODEL=gpt-5
+   PICTOAGENT_DATABASE_PATH=./data/pictoagent.db
+   ```
+
+3. Run the tests:
+
+   ```bash
+   pytest
+   ```
+
+4. Analyze an image and persist it:
+
+   ```bash
+   python3.11 -m src.main analyze sample_images/beer-pint.png
+   ```
+
+5. List stored records from the persistent database:
+
+   ```bash
+   python3.11 -m src.main list
+   ```
+
+6. Run the REST API locally:
+
+   ```bash
+   uvicorn src.api:app --reload
+   ```
+
+7. Call the API:
+
+   ```bash
+   curl http://127.0.0.1:8000/health
+   curl -X POST http://127.0.0.1:8000/records/analyze \
+     -H "Content-Type: application/json" \
+     -d '{"image_path":"sample_images/beer-pint.png","metadata":{"source":"curl"}}'
+   curl http://127.0.0.1:8000/records
+   ```
+
+## Project Layout
+
+- `src/` — core library
+- `tests/` — unit tests
+- `sample_images/` — placeholder folder for user-supplied images
+
+## How It Works
+
+The `PictoAgent` runs a simple langgraph `StateGraph` pipeline:
+1. Accept an image path
+2. Analyze it with OpenAI using a structured `ImageAnalysis` schema
+3. Store a record in a local SQLite database via an MCP-style adapter
+
+This is intentionally lightweight and designed to be extended.
+
+## Persistent Storage
+
+- The default persistent database path is `./data/pictoagent.db`.
+- You can override it with `PICTOAGENT_DATABASE_PATH` in `.env`.
+- The parent directory is created automatically when the database is opened.
+- Unit tests should keep using `tmp_path / "records.db"` so test data never touches the persistent database.
+- After installing the project, you can also use the console command `pictoagent analyze ...` or `pictoagent list`.
+
+## Docker
+
+Build the image:
+
+```bash
+docker build -t pictoagent .
+```
+
+Run the API with your local `.env` and persistent data directory mounted:
+
+```bash
+docker run --rm -p 8000:8000 \
+  --env-file .env \
+  -v "$(pwd)/data:/app/data" \
+  -v "$(pwd)/sample_images:/app/sample_images" \
+  pictoagent
+```
