@@ -66,14 +66,26 @@ app = FastAPI(title="PictoAgent API", version="0.1.0", lifespan=lifespan)
 @app.post("/webhook/telegram")
 async def telegram_webhook(payload: dict) -> dict[str, str]:
     """Receive Telegram updates via webhook."""
-    if _bot_application is None:
-        raise HTTPException(status_code=500, detail="Bot not initialized")
-    
     try:
+        print(f"DEBUG: Received webhook payload: {payload}")
+        
+        if _bot_application is None:
+            print("ERROR: Bot application not initialized")
+            raise HTTPException(status_code=500, detail="Bot not initialized")
+        
+        print("DEBUG: Processing update...")
         update = Update.de_json(payload, _bot_application.bot)
+        print(f"DEBUG: Update processed: {update}")
+        
         await _bot_application.process_update(update)
+        print("DEBUG: Update processed successfully")
+        
         return {"status": "ok"}
     except Exception as e:
+        print(f"ERROR: Failed to process webhook: {str(e)}")
+        print(f"ERROR: Payload was: {payload}")
+        import traceback
+        print(f"ERROR: Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Error processing update: {str(e)}")
 
 

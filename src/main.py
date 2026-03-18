@@ -66,29 +66,52 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, agent: PictoAgent) -> None:
     """Handle incoming messages."""
-    if update.message.photo:
-        # Handle photo
-        photo = update.message.photo[-1]  # Get the largest photo
-        file = await photo.get_file()
-        # Download the photo
-        import tempfile
-        import os
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
-            await file.download_to_drive(tmp_file.name)
-            image_path = tmp_file.name
+    try:
+        print(f"DEBUG: Handling message from {update.effective_user.username if update.effective_user else 'unknown'}")
         
+        if update.message.photo:
+            print("DEBUG: Processing photo message")
+            # Handle photo
+            photo = update.message.photo[-1]  # Get the largest photo
+            file = await photo.get_file()
+            print(f"DEBUG: Got file: {file.file_id}")
+            
+            # Download the photo
+            import tempfile
+            import os
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
+                await file.download_to_drive(tmp_file.name)
+                image_path = tmp_file.name
+            
+            print(f"DEBUG: Downloaded photo to {image_path}")
+            
+            try:
+                result = agent.process_image(image_path)
+                print(f"DEBUG: Analysis result: {result}")
+                
+                analysis = result['analysis']
+                response = f"Category: {analysis['category']}\nCalories: {analysis['calories']}\nTags: {', '.join(analysis.get('tags', []))}"
+                await update.message.reply_text(response)
+                print("DEBUG: Response sent successfully")
+            except Exception as e:
+                print(f"ERROR: Failed to analyze image: {str(e)}")
+                await update.message.reply_text(f"Error analyzing image: {e}")
+            finally:
+                os.unlink(image_path)
+                print("DEBUG: Temporary file cleaned up")
+        else:
+            print("DEBUG: Processing text message")
+            # Echo text messages
+            await update.message.reply_text(update.message.text)
+            print("DEBUG: Text message echoed")
+    except Exception as e:
+        print(f"ERROR: Failed to handle message: {str(e)}")
+        import traceback
+        print(f"ERROR: Message handling traceback: {traceback.format_exc()}")
         try:
-            result = agent.process_image(image_path)
-            analysis = result['analysis']
-            response = f"Category: {analysis['category']}\nCalories: {analysis['calories']}\nTags: {', '.join(analysis.get('tags', []))}"
-            await update.message.reply_text(response)
-        except Exception as e:
-            await update.message.reply_text(f"Error analyzing image: {e}")
-        finally:
-            os.unlink(image_path)
-    else:
-        # Echo text messages
-        await update.message.reply_text(update.message.text)
+            await update.message.reply_text("Sorry, an error occurred while processing your message.")
+        except:
+            pass  # Don't fail if we can't send error message
 
 
 def create_telegram_application(agent: PictoAgent, token: str) -> Application:
