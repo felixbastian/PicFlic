@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import json
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
+from telegram import Update
 
 from . import create_default_agent, load_config
 from .agent import PictoAgent
 from .models import ImageAnalysis, ImageRecord
+from .main import create_telegram_application
 
 
 class AnalyzeRequest(BaseModel):
@@ -37,7 +41,40 @@ def get_agent() -> PictoAgent:
     return create_default_agent()
 
 
-app = FastAPI(title="PictoAgent API", version="0.1.0")
+# Initialize bot application on startup
+_bot_application = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage startup and shutdown of the bot application."""
+    global _bot_application
+    # Startup
+    config = load_config()
+    agent = create_default_agent()
+    if config.telegram_token:
+        _bot_application = create_telegram_application(agent, config.telegram_token)
+    yield
+    # Shutdown
+    if _bot_application is not None:
+        await _bot_application.stop()
+
+
+app = FastAPI(title="PictoAgent API", version="0.1.0", lifespan=lifespan)
+
+
+@app.post("/webhook/telegram")
+async def telegram_webhook(payload: dict) -> dict[str, str]:
+    """Receive Telegram updates via webhook."""
+    if _bot_application is None:
+        raise HTTPException(status_code=500, detail="Bot not initialized")
+    
+    try:
+        update = Update.de_json(payload, _bot_application.bot)
+        await _bot_application.process_update(update)
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing update: {str(e)}")
 
 
 @app.get("/health")
@@ -46,25 +83,25 @@ def health() -> dict[str, str]:
     return {"status": "ok", "database_path": str(config.database_path)}
 
 
-@app.post("/records/analyze", response_model=RecordResponse)
-def analyze_record(payload: AnalyzeRequest, agent: PictoAgent = Depends(get_agent)) -> RecordResponse:
-    result = agent.process_image(payload.image_path, metadata=payload.metadata)
-    record = agent.get_record(result["record_id"])
-    if record is None:
-        raise HTTPException(status_code=500, detail="Record was not persisted.")
+# @app.post("/records/analyze", response_model=RecordResponse)
+# def analyze_record(payload: AnalyzeRequest, agent: PictoAgent = Depends(get_agent)) -> RecordResponse:
+#     result = agent.process_image(payload.image_path, metadata=payload.metadata)
+#     record = agent.get_record(result["record_id"])
+#     if record is None:
+#         raise HTTPException(status_code=500, detail="Record was not persisted.")
 
-    return _record_to_response(record)
-
-
-@app.get("/records", response_model=list[RecordResponse])
-def list_records(agent: PictoAgent = Depends(get_agent)) -> list[RecordResponse]:
-    return [_record_to_response(record) for record in agent.list_records()]
+#     return _record_to_response(record)
 
 
-@app.get("/records/{record_id}", response_model=RecordResponse)
-def get_record(record_id: str, agent: PictoAgent = Depends(get_agent)) -> RecordResponse:
-    record = agent.get_record(record_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="Record not found.")
+# @app.get("/records", response_model=list[RecordResponse])
+# def list_records(agent: PictoAgent = Depends(get_agent)) -> list[RecordResponse]:
+#     return [_record_to_response(record) for record in agent.list_records()]
 
-    return _record_to_response(record)
+
+# @app.get("/records/{record_id}", response_model=RecordResponse)
+# def get_record(record_id: str, agent: PictoAgent = Depends(get_agent)) -> RecordResponse:
+#     record = agent.get_record(record_id)
+#     if record is None:
+#         raise HTTPException(status_code=404, detail="Record not found.")
+
+#     return _record_to_response(record)

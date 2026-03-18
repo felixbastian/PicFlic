@@ -10,6 +10,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Use production environment variables
+COPY .env.prod .env
+
 EXPOSE 8080
 
 CMD ["uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8080"]

@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
-from functools import partial
 
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
 from . import AppConfig, PictoAgent, create_default_agent, load_config
 
@@ -93,18 +91,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, age
         await update.message.reply_text(update.message.text)
 
 
+def create_telegram_application(agent: PictoAgent, token: str) -> Application:
+    """Create and configure the Telegram bot application."""
+    application = Application.builder().token(token).build()
+    
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(
+        filters.TEXT | filters.PHOTO,
+        lambda update, context: handle_message(update, context, agent)
+    ))
+    
+    return application
+
+
 def handle_bot(agent: PictoAgent, config: AppConfig) -> int:
-    """Handle the bot command."""
+    """Handle the bot command (polling mode for local testing)."""
     if not config.telegram_token:
         print("Error: TELEGRAM_BOT_TOKEN not set")
         return 1
     
     try:
-        application = ApplicationBuilder().token(config.telegram_token).build()
-
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, partial(handle_message, agent=agent)))
-
+        application = create_telegram_application(agent, config.telegram_token)
         print("Bot is running... Press Ctrl+C to stop.")
         application.run_polling()
         return 0

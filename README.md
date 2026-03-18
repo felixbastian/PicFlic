@@ -56,7 +56,7 @@ This project includes:
    python3.11 -m src.main list
    ```
 
-6. Run the Telegram bot:
+6. Run the Telegram bot locally (polling mode):
 
    ```bash
    python3.11 -m src.main bot
@@ -67,6 +67,35 @@ This project includes:
    ```bash
    uvicorn src.api:app --reload
    ```
+
+   The API includes a webhook endpoint for Telegram at `POST /webhook/telegram`.
+
+## Webhook Setup (Production with Cloud Run)
+
+For production deployment on Google Cloud Run, use webhook-based updates instead of polling:
+
+1. Deploy the API to Cloud Run:
+
+   ```bash
+   gcloud run deploy pictoagent --source . --region us-central1 --allow-unauthenticated
+   ```
+
+2. After deployment, set the Telegram webhook to point to your Cloud Run URL:
+
+   ```bash
+   curl -X POST https://api.telegram.org/bot{TOKEN}/setWebhook \
+     -d url=https://{CLOUD_RUN_URL}/webhook/telegram
+   ```
+
+   Replace `{TOKEN}` with your bot token and `{CLOUD_RUN_URL}` with your Cloud Run service URL.
+
+3. Verify the webhook is set:
+
+   ```bash
+   curl https://api.telegram.org/bot{TOKEN}/getWebhookInfo
+   ```
+
+Now Telegram will send updates to your Cloud Run service via POST requests to the webhook endpoint.
 
 8. Call the API:
 

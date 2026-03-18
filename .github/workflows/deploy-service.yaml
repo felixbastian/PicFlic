@@ -52,3 +52,4 @@ jobs:
           image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}:${{ github.sha }}
           flags: >-
             --service-account=cloud-run-runtime@${{ env.PROJECT_ID }}.iam.gserviceaccount.com
+            --allow-unauthenticated
