@@ -17,6 +17,7 @@ class AppConfig:
     openai_api_key: str | None
     openai_model: str = "gpt-5"
     database_path: Path = DEFAULT_DATABASE_PATH
+    telegram_token: str | None = None
 
 
 @lru_cache(maxsize=1)
@@ -32,6 +33,7 @@ def load_config(env_file: str | Path = DEFAULT_ENV_FILE) -> AppConfig:
             os.getenv("PICTOAGENT_DATABASE_PATH")
             or env_values.get("PICTOAGENT_DATABASE_PATH")
         ),
+        telegram_token=os.getenv("TELEGRAM_BOT_TOKEN") or env_values.get("TELEGRAM_BOT_TOKEN"),
     )
 
 

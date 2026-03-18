@@ -1,13 +1,28 @@
+Metadata-Version: 2.4
+Name: pictoagent
+Version: 0.1.0
+Summary: A lightweight personal agent that tracks food and drinks from photos using langgraph and an MCP-like interface.
+Author: PictoAgent
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.110.0
+Requires-Dist: langgraph>=1.1
+Requires-Dist: openai>=1.0.0
+Requires-Dist: pydantic>=2.0.0
+Requires-Dist: uvicorn>=0.29.0
+Requires-Dist: python-telegram-bot>=20.0
+Provides-Extra: test
+Requires-Dist: pytest>=7.0; extra == "test"
+
 # PictoAgent
 
-A minimal personal agent framework for tracking daily life from photos (food, drinks, etc.) with a Telegram bot interface.
+A minimal personal agent framework for tracking daily life from photos (food, drinks, etc.).
 
 This project includes:
 - A simple **agent** that takes an image path and produces a lightweight analysis of calories / macros / alcohol.
 - A small **MCP-like layer** (Model Context Protocol) to read/write state from a database.
 - A **langgraph-based pipeline** for the analysis.
 - A **FastAPI REST API** for analyzing images and retrieving stored records.
-- A **Telegram bot** for sending photos and getting analysis.
 - Unit tests and a placeholder folder for sample images.
 
 ## Getting Started
@@ -22,20 +37,12 @@ This project includes:
    cp .env.example .env
    ```
 
-2. Create a Telegram bot and get a token:
-
-   1. Open Telegram and chat with [@BotFather](https://t.me/BotFather).
-   2. Send `/start` and then `/newbot`.
-   3. Follow the prompts to choose a name and username.
-   4. When finished, BotFather will send a token (looks like `123456:ABC-DEF...`).
-
-3. Configure OpenAI and Telegram credentials in `.env`:
+2. Configure OpenAI credentials in `.env`:
 
    ```bash
    OPENAI_API_KEY=your_openai_api_key_here
    PICTOAGENT_OPENAI_MODEL=gpt-5
    PICTOAGENT_DATABASE_PATH=./data/pictoagent.db
-   TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
    ```
 
 3. Run the tests:
@@ -56,19 +63,13 @@ This project includes:
    python3.11 -m src.main list
    ```
 
-6. Run the Telegram bot:
-
-   ```bash
-   python3.11 -m src.main bot
-   ```
-
-7. Run the REST API locally:
+6. Run the REST API locally:
 
    ```bash
    uvicorn src.api:app --reload
    ```
 
-8. Call the API:
+7. Call the API:
 
    ```bash
    curl http://127.0.0.1:8000/health
