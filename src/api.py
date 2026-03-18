@@ -53,11 +53,19 @@ async def lifespan(app: FastAPI):
     config = load_config()
     agent = create_default_agent()
     if config.telegram_token:
+        print("DEBUG: Creating Telegram application...")
         _bot_application = create_telegram_application(agent, config.telegram_token)
+        print("DEBUG: Initializing Telegram application...")
+        await _bot_application.initialize()
+        print("DEBUG: Telegram application initialized successfully")
+    else:
+        print("WARNING: No telegram token found, bot will not be initialized")
     yield
     # Shutdown
     if _bot_application is not None:
+        print("DEBUG: Shutting down Telegram application...")
         await _bot_application.stop()
+        print("DEBUG: Telegram application shut down")
 
 
 app = FastAPI(title="PictoAgent API", version="0.1.0", lifespan=lifespan)
