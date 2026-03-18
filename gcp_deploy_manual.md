@@ -46,7 +46,7 @@ gcloud iam service-accounts add-iam-policy-binding \
 
 
 
-gcloud run services add-iam-policy-binding SERVICE \
-  --region=europe-west1 \
-  --member="allUsers" \
-  --role="roles/run.invoker"
+### Telegram one time setup
+
+curl -X POST https://api.telegram.org/bot8600025848:AAHbOpEWZGLY3Gg3WieG28nz8K12OHV6IHU/setWebhook \
+  -d url=https://picflic-cloud-run-642164961505.europe-west1.run.app/webhook/telegram

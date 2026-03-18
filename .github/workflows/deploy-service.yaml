@@ -54,3 +54,4 @@ jobs:
             --service-account=cloud-run-runtime@${{ env.PROJECT_ID }}.iam.gserviceaccount.com
             --allow-unauthenticated
             --set-env-vars OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }},TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+            --timeout=300
