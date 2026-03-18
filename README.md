@@ -71,11 +71,11 @@ This project includes:
 8. Call the API:
 
    ```bash
-   curl http://127.0.0.1:8000/health
-   curl -X POST http://127.0.0.1:8000/records/analyze \
+   curl http://127.0.0.1:8080/health
+   curl -X POST http://127.0.0.1:8080/records/analyze \
      -H "Content-Type: application/json" \
      -d '{"image_path":"sample_images/beer-pint.png","metadata":{"source":"curl"}}'
-   curl http://127.0.0.1:8000/records
+   curl http://127.0.0.1:8080/records
    ```
 
 ## Project Layout
@@ -112,7 +112,7 @@ docker build -t pictoagent .
 Run the API with your local `.env` and persistent data directory mounted:
 
 ```bash
-docker run --rm -p 8000:8000 \
+docker run --rm -p 8080:8080 \
   --env-file .env \
   -v "$(pwd)/data:/app/data" \
   -v "$(pwd)/sample_images:/app/sample_images" \
