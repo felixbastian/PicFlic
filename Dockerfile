@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Use production environment variables
+# Use production environment file for non-secret config
 COPY .env.prod .env
 
 EXPOSE 8080
