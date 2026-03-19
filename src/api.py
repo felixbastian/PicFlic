@@ -13,8 +13,8 @@ from telegram import Update
 
 from . import create_default_agent, load_config
 from .agent import PictoAgent
+from .bot import create_telegram_application
 from .models import ImageAnalysis, ImageRecord
-from .main import create_telegram_application
 from .logging_config import setup_logging
 from .db import PostgresDatabase
 
@@ -71,7 +71,7 @@ async def lifespan(app: FastAPI):
     
     if config.telegram_token:
         logger.info("Creating Telegram application")
-        _bot_application = create_telegram_application(agent, config.telegram_token)
+        _bot_application = create_telegram_application(agent, config.telegram_token, _db)
         logger.info("Initializing Telegram application")
         await _bot_application.initialize()
         logger.info("Telegram application initialized successfully")
@@ -109,6 +109,7 @@ async def telegram_webhook(payload: dict) -> dict[str, str]:
                 first_name=update.effective_user.first_name,
                 last_name=update.effective_user.last_name,
             )
+            setattr(update, "_picflic_user_id", user_id)
             logger.info(f"User {update.effective_user.username} has user_id {user_id}")
         
         await _bot_application.process_update(update)

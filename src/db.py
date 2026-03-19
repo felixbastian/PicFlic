@@ -162,3 +162,65 @@ class PostgresDatabase:
             except Exception as e:
                 logger.error(f"Failed to create user: {e}")
                 raise
+
+    async def store_consumption(self, user_id: str, analysis: ImageRecord | dict | "ImageAnalysis") -> str:
+        """Persist a nutrition analysis to fact_consumption for a user."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        from .models import ImageAnalysis
+
+        if isinstance(analysis, ImageRecord):
+            normalized = analysis.analysis
+            meal_id = analysis.id
+        elif isinstance(analysis, dict):
+            normalized = ImageAnalysis.model_validate(analysis)
+            meal_id = str(uuid.uuid4())
+        else:
+            normalized = analysis
+            meal_id = str(uuid.uuid4())
+
+        async with self._pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO fact_consumption (
+                        meal_id,
+                        user_id,
+                        category,
+                        calories,
+                        tags,
+                        alcohol_units
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    """,
+                    meal_id,
+                    user_id,
+                    normalized.category,
+                    int(round(normalized.calories)),
+                    normalized.tags,
+                    normalized.alcohol_units,
+                )
+                logger.info("Stored fact_consumption row %s for user %s", meal_id, user_id)
+                return meal_id
+            except Exception as e:
+                logger.error("Failed to store consumption for user %s: %s", user_id, e)
+                raise
+
+    async def get_daily_calories(self, user_id: str) -> int:
+        """Return the user's total calories for the current database day."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            total = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(calories), 0)
+                FROM fact_consumption
+                WHERE user_id = $1
+                  AND created_at >= CURRENT_DATE
+                  AND created_at < CURRENT_DATE + INTERVAL '1 day'
+                """,
+                user_id,
+            )
+            return int(total or 0)

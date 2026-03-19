@@ -12,6 +12,11 @@ gcloud projects add-iam-policy-binding picflic-490614 \
   --member="serviceAccount:cloud-run-runtime@picflic-490614.iam.gserviceaccount.com" \
   --role="roles/cloudsql.client"
 
+gcloud projects add-iam-policy-binding picflic-490614 \
+  --member="serviceAccount:cloud-run-runtime@picflic-490614.iam.gserviceaccount.com" \
+  --role="roles/cloudsql.client"
+
+
 # Cloud SQL connection name used by Cloud Run
 # Format: PROJECT_ID:REGION:INSTANCE_NAME
 # For this service:
