@@ -22,6 +22,7 @@ class _FakeMessage:
     def __init__(self) -> None:
         self.photo = [_FakePhoto()]
         self.text = None
+        self.caption = None
         self.replies: list[str] = []
 
     async def reply_text(self, text: str) -> None:
@@ -29,7 +30,11 @@ class _FakeMessage:
 
 
 class _FakeAgent:
-    def process_image(self, image_path: str) -> dict:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def process_image(self, image_path: str, metadata: dict | None = None) -> dict:
+        self.calls.append({"image_path": image_path, "metadata": metadata})
         return {
             "record_id": "meal-123",
             "analysis": {
@@ -72,6 +77,7 @@ def test_start_replies_with_welcome_message():
 
 def test_handle_message_stores_fact_consumption():
     message = _FakeMessage()
+    agent = _FakeAgent()
     update = SimpleNamespace(
         update_id=1001,
         effective_user=SimpleNamespace(
@@ -85,8 +91,10 @@ def test_handle_message_stores_fact_consumption():
     context = SimpleNamespace(application=SimpleNamespace(bot_data={}))
     postgres_db = _FakePostgresDatabase()
 
-    asyncio.run(handle_message(update, context, _FakeAgent(), postgres_db))
+    asyncio.run(handle_message(update, context, agent, postgres_db))
 
+    assert len(agent.calls) == 1
+    assert agent.calls[0]["metadata"] == {}
     assert postgres_db.user_calls == [
         {
             "telegram_user_id": 42,
@@ -109,6 +117,7 @@ def test_handle_message_stores_fact_consumption():
 
 def test_handle_message_reuses_webhook_resolved_user_id():
     message = _FakeMessage()
+    agent = _FakeAgent()
     update = SimpleNamespace(
         update_id=1002,
         effective_user=SimpleNamespace(
@@ -124,13 +133,59 @@ def test_handle_message_reuses_webhook_resolved_user_id():
     )
     postgres_db = _FakePostgresDatabase()
 
-    asyncio.run(handle_message(update, context, _FakeAgent(), postgres_db))
+    asyncio.run(handle_message(update, context, agent, postgres_db))
 
     assert postgres_db.user_calls == []
     assert len(postgres_db.consumption_calls) == 1
     assert postgres_db.consumption_calls[0]["user_id"] == "user-from-webhook"
     assert postgres_db.daily_calories_calls == ["user-from-webhook"]
     assert context.application.bot_data["_picflic_user_ids"] == {}
+
+
+def test_handle_message_passes_caption_as_user_prompt():
+    message = _FakeMessage()
+    message.caption = "This is a chicken salad with extra avocado"
+    agent = _FakeAgent()
+    update = SimpleNamespace(
+        update_id=1005,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+
+    asyncio.run(handle_message(update, SimpleNamespace(application=SimpleNamespace(bot_data={})), agent))
+
+    assert len(agent.calls) == 1
+    assert agent.calls[0]["metadata"] == {
+        "user_prompt": "This is a chicken salad with extra avocado"
+    }
+    assert message.replies == ["Category: drink\nCalories: 151.7\nTags: alcoholic"]
+
+
+def test_handle_message_echoes_plain_text_without_analysis():
+    message = _FakeMessage()
+    message.photo = []
+    message.text = "hello there"
+    agent = _FakeAgent()
+    update = SimpleNamespace(
+        update_id=1006,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+
+    asyncio.run(handle_message(update, SimpleNamespace(application=SimpleNamespace(bot_data={})), agent))
+
+    assert agent.calls == []
+    assert message.replies == ["hello there"]
 
 
 def test_persist_consumption_creates_user_when_needed():

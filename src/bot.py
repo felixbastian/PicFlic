@@ -42,7 +42,11 @@ async def handle_message(
                 image_path = tmp_file.name
 
             try:
-                result = agent.process_image(image_path)
+                metadata: dict[str, str] = {}
+                if update.message.caption:
+                    metadata["user_prompt"] = update.message.caption
+
+                result = agent.process_image(image_path, metadata=metadata)
                 analysis = result["analysis"]
                 daily_calories: int | None = None
                 if postgres_db is not None and update.effective_user is not None:
@@ -64,7 +68,7 @@ async def handle_message(
                 os.unlink(image_path)
         else:
             logger.debug("Echoing text message from %s", user)
-            await update.message.reply_text(update.message.text)
+            await update.message.reply_text(update.message.text or "")
     except Exception as e:
         logger.exception("Error handling message: %s", str(e))
         try:
