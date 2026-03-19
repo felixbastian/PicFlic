@@ -46,7 +46,7 @@ async def handle_message(
                 analysis = result["analysis"]
                 daily_calories: int | None = None
                 if postgres_db is not None and update.effective_user is not None:
-                    _, user_id = await persist_consumption(update, postgres_db, analysis)
+                    _, user_id = await persist_consumption(update, context, postgres_db, analysis)
                     daily_calories = await postgres_db.get_daily_calories(user_id)
                 response = (
                     f"Category: {analysis['category']}\n"
@@ -75,6 +75,7 @@ async def handle_message(
 
 async def persist_consumption(
     update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
     postgres_db: PostgresDatabase,
     analysis: dict,
 ) -> tuple[str, str]:
@@ -82,7 +83,8 @@ async def persist_consumption(
     if update.effective_user is None:
         raise ValueError("Cannot persist consumption without an effective Telegram user")
 
-    user_id = getattr(update, "_picflic_user_id", None)
+    pending_user_ids = context.application.bot_data.get("_picflic_user_ids", {})
+    user_id = pending_user_ids.pop(update.update_id, None)
     if user_id is None:
         user_id = await postgres_db.get_or_create_user(
             telegram_user_id=update.effective_user.id,

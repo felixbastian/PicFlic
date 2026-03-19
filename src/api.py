@@ -109,7 +109,8 @@ async def telegram_webhook(payload: dict) -> dict[str, str]:
                 first_name=update.effective_user.first_name,
                 last_name=update.effective_user.last_name,
             )
-            setattr(update, "_picflic_user_id", user_id)
+            pending_user_ids = _bot_application.bot_data.setdefault("_picflic_user_ids", {})
+            pending_user_ids[update.update_id] = user_id
             logger.info(f"User {update.effective_user.username} has user_id {user_id}")
         
         await _bot_application.process_update(update)
