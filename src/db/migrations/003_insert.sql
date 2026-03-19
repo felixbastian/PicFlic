@@ -1,0 +1,32 @@
+INSERT INTO dim_models (
+    model_id,
+    model_provider,
+    model_name,
+    "image_input_costs_in_$_per_1m_token",
+    "text_input_costs_in_$_per_1m_token",
+    "text_output_costs_in_$_per_1m_token"
+)
+VALUES (
+    gen_random_uuid(),
+    'openai',
+    'gpt-5',
+    1.25,
+    1.25,
+    10.0
+),
+(
+    gen_random_uuid(),
+    'openai',
+    'gpt-5-mini',
+    0.25,
+    0.25,
+    2.0
+),
+(
+    gen_random_uuid(),
+    'openai',
+    'gpt-5.4-mini',
+    0.75,
+    0.75,
+    4.5
+);

@@ -97,6 +97,34 @@ For production deployment on Google Cloud Run, use webhook-based updates instead
 
 Now Telegram will send updates to your Cloud Run service via POST requests to the webhook endpoint.
 
+## Cloud SQL on Cloud Run
+
+The API can connect to PostgreSQL on Cloud SQL from Cloud Run using the built-in Cloud SQL socket mount. Set these environment variables:
+
+```bash
+DB_USER=app_user
+DB_PASSWORD=your_database_password
+DB_NAME=app_db
+INSTANCE_CONNECTION_NAME=your-gcp-project:your-region:your-instance
+```
+
+For this project, the current instance connection name is:
+
+```bash
+INSTANCE_CONNECTION_NAME=picflic-490614:europe-west1:picflic-database
+```
+
+When deploying to Cloud Run, attach the Cloud SQL instance:
+
+```bash
+gcloud run deploy picflic-cloud-run \
+  --region europe-west1 \
+  --add-cloudsql-instances picflic-490614:europe-west1:picflic-database \
+  --set-env-vars DB_USER=app_user,DB_NAME=app_db,INSTANCE_CONNECTION_NAME=picflic-490614:europe-west1:picflic-database
+```
+
+Pass `DB_PASSWORD` as a secret rather than committing it to the repo.
+
 8. Call the API:
 
    ```bash

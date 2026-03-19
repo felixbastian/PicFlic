@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -14,6 +15,10 @@ from . import create_default_agent, load_config
 from .agent import PictoAgent
 from .models import ImageAnalysis, ImageRecord
 from .main import create_telegram_application
+from .logging_config import setup_logging
+from .db import PostgresDatabase
+
+logger = logging.getLogger(__name__)
 
 
 class AnalyzeRequest(BaseModel):
@@ -43,29 +48,44 @@ def get_agent() -> PictoAgent:
 
 # Initialize bot application on startup
 _bot_application = None
+_db = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage startup and shutdown of the bot application."""
-    global _bot_application
+    # Initialize logging
+    setup_logging()
+    
+    global _bot_application, _db
     # Startup
     config = load_config()
     agent = create_default_agent()
-    if config.telegram_token:
-        print("DEBUG: Creating Telegram application...")
-        _bot_application = create_telegram_application(agent, config.telegram_token)
-        print("DEBUG: Initializing Telegram application....")
-        await _bot_application.initialize()
-        print("DEBUG: Telegram application initialized successfully")
+    
+    if config.postgres_enabled:
+        _db = PostgresDatabase.from_config(config)
+        await _db.connect()
     else:
-        print("WARNING: No telegram token found, bot will not be initialized")
+        _db = None
+        logger.warning("PostgreSQL is not configured; webhook user persistence is disabled")
+    
+    if config.telegram_token:
+        logger.info("Creating Telegram application")
+        _bot_application = create_telegram_application(agent, config.telegram_token)
+        logger.info("Initializing Telegram application")
+        await _bot_application.initialize()
+        logger.info("Telegram application initialized successfully")
+    else:
+        logger.warning("No telegram token found, bot will not be initialized")
     yield
     # Shutdown
     if _bot_application is not None:
-        print("DEBUG: Shutting down Telegram application...")
+        logger.info("Shutting down Telegram application")
         await _bot_application.stop()
-        print("DEBUG: Telegram application shut down")
+        logger.info("Telegram application shut down")
+    
+    if _db is not None:
+        await _db.disconnect()
 
 
 app = FastAPI(title="PictoAgent API", version="0.1.0", lifespan=lifespan)
@@ -75,32 +95,39 @@ app = FastAPI(title="PictoAgent API", version="0.1.0", lifespan=lifespan)
 async def telegram_webhook(payload: dict) -> dict[str, str]:
     """Receive Telegram updates via webhook."""
     try:
-        print(f"DEBUG: Received webhook payload: {payload}")
-        
         if _bot_application is None:
-            print("ERROR: Bot application not initialized")
+            logger.error("Bot application not initialized")
             raise HTTPException(status_code=500, detail="Bot not initialized")
         
-        print("DEBUG: Processing update...")
         update = Update.de_json(payload, _bot_application.bot)
-        print(f"DEBUG: Update processed: {update}")
+        
+        # Handle user creation/lookup when PostgreSQL is configured.
+        if _db is not None and update.effective_user:
+            user_id = await _db.get_or_create_user(
+                telegram_user_id=update.effective_user.id,
+                username=update.effective_user.username,
+                first_name=update.effective_user.first_name,
+                last_name=update.effective_user.last_name,
+            )
+            logger.info(f"User {update.effective_user.username} has user_id {user_id}")
         
         await _bot_application.process_update(update)
-        print("DEBUG: Update processed successfully")
+        logger.debug(f"Processed update from {update.effective_user.username if update.effective_user else 'unknown'}")
         
         return {"status": "ok"}
     except Exception as e:
-        print(f"ERROR: Failed to process webhook: {str(e)}")
-        print(f"ERROR: Payload was: {payload}")
-        import traceback
-        print(f"ERROR: Traceback: {traceback.format_exc()}")
+        logger.exception(f"Failed to process webhook: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing update: {str(e)}")
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
     config = load_config()
-    return {"status": "ok", "database_path": str(config.database_path)}
+    return {
+        "status": "ok",
+        "database_path": str(config.database_path),
+        "postgres_enabled": str(config.postgres_enabled).lower(),
+    }
 
 
 # @app.post("/records/analyze", response_model=RecordResponse)

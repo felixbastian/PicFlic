@@ -9,6 +9,15 @@ gcloud projects add-iam-policy-binding picflic-490614 \
   --role="roles/artifactregistry.writer"
 
 gcloud projects add-iam-policy-binding picflic-490614 \
+  --member="serviceAccount:cloud-run-runtime@picflic-490614.iam.gserviceaccount.com" \
+  --role="roles/cloudsql.client"
+
+# Cloud SQL connection name used by Cloud Run
+# Format: PROJECT_ID:REGION:INSTANCE_NAME
+# For this service:
+# picflic-490614:europe-west1:picflic-database
+
+gcloud projects add-iam-policy-binding picflic-490614 \
   --member="serviceAccount:github-deployer@picflic-490614.iam.gserviceaccount.com" \
   --role="roles/run.admin"
 

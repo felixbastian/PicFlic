@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram import Update
 
 from . import AppConfig, PictoAgent, create_default_agent, load_config
+from .logging_config import setup_logging
+
+logger = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,14 +71,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, agent: PictoAgent) -> None:
     """Handle incoming messages."""
     try:
-        print(f"DEBUG: Handling message from {update.effective_user.username if update.effective_user else 'unknown'}")
+        user = update.effective_user.username if update.effective_user else "unknown"
         
         if update.message.photo:
-            print("DEBUG: Processing photo message")
+            logger.info(f"Processing photo from {user}")
             # Handle photo
             photo = update.message.photo[-1]  # Get the largest photo
             file = await photo.get_file()
-            print(f"DEBUG: Got file: {file.file_id}")
             
             # Download the photo
             import tempfile
@@ -83,31 +86,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, age
                 await file.download_to_drive(tmp_file.name)
                 image_path = tmp_file.name
             
-            print(f"DEBUG: Downloaded photo to {image_path}")
-            
             try:
                 result = agent.process_image(image_path)
-                print(f"DEBUG: Analysis result: {result}")
-                
                 analysis = result['analysis']
                 response = f"Category: {analysis['category']}\nCalories: {analysis['calories']}\nTags: {', '.join(analysis.get('tags', []))}"
                 await update.message.reply_text(response)
-                print("DEBUG: Response sent successfully")
+                logger.info(f"Successfully analyzed photo from {user}")
             except Exception as e:
-                print(f"ERROR: Failed to analyze image: {str(e)}")
+                logger.error(f"Failed to analyze image from {user}: {str(e)}")
                 await update.message.reply_text(f"Error analyzing image: {e}")
             finally:
                 os.unlink(image_path)
-                print("DEBUG: Temporary file cleaned up")
         else:
-            print("DEBUG: Processing text message")
+            logger.debug(f"Echoing text message from {user}")
             # Echo text messages
             await update.message.reply_text(update.message.text)
-            print("DEBUG: Text message echoed")
     except Exception as e:
-        print(f"ERROR: Failed to handle message: {str(e)}")
-        import traceback
-        print(f"ERROR: Message handling traceback: {traceback.format_exc()}")
+        logger.exception(f"Error handling message: {str(e)}")
         try:
             await update.message.reply_text("Sorry, an error occurred while processing your message.")
         except:
@@ -130,20 +125,22 @@ def create_telegram_application(agent: PictoAgent, token: str) -> Application:
 def handle_bot(agent: PictoAgent, config: AppConfig) -> int:
     """Handle the bot command (polling mode for local testing)."""
     if not config.telegram_token:
-        print("Error: TELEGRAM_BOT_TOKEN not set")
+        logger.error("TELEGRAM_BOT_TOKEN not set")
         return 1
     
     try:
         application = create_telegram_application(agent, config.telegram_token)
-        print("Bot is running... Press Ctrl+C to stop.")
+        logger.info("Bot is running... Press Ctrl+C to stop.")
         application.run_polling()
         return 0
     except Exception as e:
-        print(f"Error running bot: {e}")
+        logger.exception(f"Error running bot: {e}")
         return 1
 
 
 def main() -> int:
+    setup_logging()
+    
     parser = build_parser()
     args = parser.parse_args()
 
@@ -151,7 +148,7 @@ def main() -> int:
         config = load_config()
         agent = create_default_agent()
     except Exception as e:
-        print(f"Error initializing: {e}")
+        logger.exception("Error initializing")
         return 1
 
     if args.command == "analyze":
@@ -161,7 +158,7 @@ def main() -> int:
     elif args.command == "bot":
         return handle_bot(agent, config)
     else:
-        print(f"Unknown command: {args.command}")
+        logger.error(f"Unknown command: {args.command}")
         return 1
 
 
