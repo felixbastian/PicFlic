@@ -12,3 +12,5 @@ psql -h 127.0.0.1 -p 5432 -U postgres -d postgres
 # Run the migration scripts
 psql -h 127.0.0.1 -U postgres -d postgres -f src/db/migrations/001_init_db.sql
 psql -h 127.0.0.1 -U app_user -d app_db -f src/db/migrations/002_init_schema.sql
+psql -h 127.0.0.1 -U app_user -d app_db -f src/db/migrations/003_insert.sql
+psql -h 127.0.0.1 -U app_user -d app_db -f src/db/migrations/004_init_schema.sql

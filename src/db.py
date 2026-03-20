@@ -2,17 +2,66 @@
 
 from __future__ import annotations
 
+import logging
+import re
 import uuid
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional, Sequence
+
 import asyncpg
-import logging
 
 from .config import AppConfig
-from .models import ImageRecord
+from .models import ExpenseAnalysis, ImageRecord
 from .mcp import DatabaseMCPAdapter
 
 logger = logging.getLogger(__name__)
+
+_DISALLOWED_SQL_PATTERN = re.compile(
+    r"\b("
+    r"insert|update|delete|drop|alter|truncate|create|grant|revoke|comment|copy|vacuum|"
+    r"analyze|do|call|execute|merge|attach|detach|refresh|set|reset|discard"
+    r")\b",
+    re.IGNORECASE,
+)
+_TABLE_REFERENCE_PATTERN = re.compile(r"\b(?:from|join)\s+([a-zA-Z_][\w\.]*)", re.IGNORECASE)
+_USER_FILTER_PATTERN = re.compile(r"\buser_id\s*=\s*\$1\b", re.IGNORECASE)
+
+
+def validate_readonly_query(query: str, allowed_tables: Sequence[str]) -> str:
+    """Validate a generated SQL query against conservative read-only guardrails."""
+    normalized = query.strip()
+    if not normalized:
+        raise ValueError("Query cannot be empty.")
+
+    statement = normalized.rstrip(";").strip()
+    if not statement:
+        raise ValueError("Query cannot be empty.")
+    if ";" in statement:
+        raise ValueError("Only a single SQL statement is allowed.")
+    if "--" in statement or "/*" in statement or "*/" in statement:
+        raise ValueError("SQL comments are not allowed.")
+    if not re.match(r"^(select|with)\b", statement, re.IGNORECASE):
+        raise ValueError("Only read-only SELECT queries are allowed.")
+    if _DISALLOWED_SQL_PATTERN.search(statement):
+        raise ValueError("Only read-only SELECT queries are allowed.")
+    if not _USER_FILTER_PATTERN.search(statement):
+        raise ValueError("Query must filter on user_id = $1.")
+
+    allowed = {table.lower() for table in allowed_tables}
+    referenced_tables = {
+        table_name.split(".")[-1].strip('"').lower()
+        for table_name in _TABLE_REFERENCE_PATTERN.findall(statement)
+    }
+    if not referenced_tables:
+        raise ValueError("Query must reference one of the allowed fact tables.")
+
+    disallowed_tables = referenced_tables - allowed
+    if disallowed_tables:
+        raise ValueError(
+            f"Query references disallowed tables: {', '.join(sorted(disallowed_tables))}."
+        )
+
+    return statement
 
 
 class SqliteDatabase:
@@ -34,6 +83,7 @@ class SqliteDatabase:
 
     def list_ids(self) -> Iterable[str]:
         return self._mcp.list_keys()
+
 
 class PostgresDatabase:
     """PostgreSQL database wrapper for handling user data."""
@@ -163,18 +213,18 @@ class PostgresDatabase:
                 logger.error(f"Failed to create user: {e}")
                 raise
 
-    async def store_consumption(self, user_id: str, analysis: ImageRecord | dict | "ImageAnalysis") -> str:
+    async def store_consumption(self, user_id: str, analysis: ImageRecord | dict | "NutritionAnalysis") -> str:
         """Persist a nutrition analysis to fact_consumption for a user."""
         if not self._pool:
             raise RuntimeError("Database not connected. Call connect() first.")
 
-        from .models import ImageAnalysis
+        from .models import NutritionAnalysis
 
         if isinstance(analysis, ImageRecord):
             normalized = analysis.analysis
             meal_id = analysis.id
         elif isinstance(analysis, dict):
-            normalized = ImageAnalysis.model_validate(analysis)
+            normalized = NutritionAnalysis.model_validate(analysis)
             meal_id = str(uuid.uuid4())
         else:
             normalized = analysis
@@ -224,3 +274,56 @@ class PostgresDatabase:
                 user_id,
             )
             return int(total or 0)
+
+    async def store_expense(self, user_id: str, analysis: ExpenseAnalysis | dict) -> str:
+        """Persist an expense analysis to fact_expenses for a user."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        normalized = analysis
+        if isinstance(analysis, dict):
+            normalized = ExpenseAnalysis.model_validate(analysis)
+
+        expense_id = str(uuid.uuid4())
+        async with self._pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO fact_expenses (
+                        expense_id,
+                        user_id,
+                        description,
+                        expense_total_amount_in_euros,
+                        category
+                    )
+                    VALUES ($1, $2, $3, $4, $5)
+                    """,
+                    expense_id,
+                    user_id,
+                    normalized.description,
+                    normalized.expense_total_amount_in_euros,
+                    normalized.category,
+                )
+                logger.info("Stored fact_expenses row %s for user %s", expense_id, user_id)
+                return expense_id
+            except Exception as e:
+                logger.error("Failed to store expense for user %s: %s", user_id, e)
+                raise
+
+    async def execute_guarded_query(
+        self,
+        query: str,
+        user_id: str,
+        allowed_tables: Sequence[str],
+    ) -> dict[str, Any]:
+        """Execute a validated read-only query for a given user and return one row."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        statement = validate_readonly_query(query, allowed_tables)
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(statement, user_id)
+            if row is None:
+                return {}
+            return dict(row)

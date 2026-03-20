@@ -159,7 +159,7 @@ This starts the local API, the optional Cloud SQL proxy, a `cloudflared` tunnel,
 
 The `PictoAgent` runs a simple langgraph `StateGraph` pipeline:
 1. Accept an image path
-2. Analyze it with OpenAI using a structured `ImageAnalysis` schema
+2. Analyze it with OpenAI using a structured `NutritionAnalysis` schema
 3. Store a record in a local SQLite database via an MCP-style adapter
 
 This is intentionally lightweight and designed to be extended.
