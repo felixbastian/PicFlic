@@ -125,6 +125,20 @@ gcloud run deploy picflic-cloud-run \
 
 Pass `DB_PASSWORD` as a secret rather than committing it to the repo.
 
+## Local Dev Bot
+
+For local end-to-end testing with a separate Telegram bot, use the workflow in [`TESTING.md`](./TESTING.md).
+
+In short:
+
+```bash
+source .venv/bin/activate
+cp .env.devbot.example .env.devbot
+scripts/start_local_test_stack.sh
+```
+
+This starts the local API, the optional Cloud SQL proxy, a `cloudflared` tunnel, and the Telegram webhook in one go so you can test the real webhook path locally without pushing a Cloud Run deployment.
+
 8. Call the API:
 
    ```bash

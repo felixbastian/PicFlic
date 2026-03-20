@@ -1,6 +1,9 @@
 .env
+.env.devbot
+.env.devbot.local
 src/__pycache__
 src/*.pyc
 .DS_Store
 .pytest_cache/
 .venv/
+data/pictoagent-devbot.db
