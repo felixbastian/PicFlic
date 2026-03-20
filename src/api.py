@@ -14,7 +14,7 @@ from telegram import Update
 from . import create_default_agent, load_config
 from .agent import PictoAgent
 from .bot import create_telegram_application
-from .models import ImageAnalysis, ImageRecord
+from .models import ImageRecord, NutritionAnalysis
 from .logging_config import setup_logging
 from .db import PostgresDatabase
 
@@ -29,7 +29,7 @@ class AnalyzeRequest(BaseModel):
 class RecordResponse(BaseModel):
     id: str
     image_path: str
-    analysis: ImageAnalysis
+    analysis: NutritionAnalysis
     created_at: str
 
 
@@ -102,7 +102,7 @@ async def telegram_webhook(payload: dict) -> dict[str, str]:
         update = Update.de_json(payload, _bot_application.bot)
         
         # Handle user creation/lookup when PostgreSQL is configured.
-        if _db is not None and update.effective_user:
+        if _db is not None and update.effective_user and update.message and update.message.photo:
             user_id = await _db.get_or_create_user(
                 telegram_user_id=update.effective_user.id,
                 username=update.effective_user.username,
@@ -130,27 +130,3 @@ def health() -> dict[str, str]:
         "database_path": str(config.database_path),
         "postgres_enabled": str(config.postgres_enabled).lower(),
     }
-
-
-# @app.post("/records/analyze", response_model=RecordResponse)
-# def analyze_record(payload: AnalyzeRequest, agent: PictoAgent = Depends(get_agent)) -> RecordResponse:
-#     result = agent.process_image(payload.image_path, metadata=payload.metadata)
-#     record = agent.get_record(result["record_id"])
-#     if record is None:
-#         raise HTTPException(status_code=500, detail="Record was not persisted.")
-
-#     return _record_to_response(record)
-
-
-# @app.get("/records", response_model=list[RecordResponse])
-# def list_records(agent: PictoAgent = Depends(get_agent)) -> list[RecordResponse]:
-#     return [_record_to_response(record) for record in agent.list_records()]
-
-
-# @app.get("/records/{record_id}", response_model=RecordResponse)
-# def get_record(record_id: str, agent: PictoAgent = Depends(get_agent)) -> RecordResponse:
-#     record = agent.get_record(record_id)
-#     if record is None:
-#         raise HTTPException(status_code=404, detail="Record not found.")
-
-#     return _record_to_response(record)
