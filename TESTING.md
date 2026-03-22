@@ -52,8 +52,19 @@ That script:
 - waits until the public `/health` endpoint is reachable
 - reads the public URL
 - sets the Telegram webhook automatically
+- writes logs to `./logs/local-test-stack/<timestamp>/`
+- also updates stable symlinks at:
+  - `./logs/local-test-stack/app.log`
+  - `./logs/local-test-stack/cloudflared.log`
+  - `./logs/local-test-stack/cloudsql-proxy.log`
 
 Press `Ctrl+C` to stop the stack again.
+
+To watch logs while it is running:
+
+```bash
+tail -f logs/local-test-stack/app.log
+```
 
 ## Manual fallback
 

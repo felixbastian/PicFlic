@@ -10,9 +10,9 @@ class _FakeConnection:
     def __init__(self) -> None:
         self.execute_calls: list[tuple[str, tuple]] = []
         self.fetchval_calls: list[tuple[str, tuple]] = []
-        self.fetchrow_calls: list[tuple[str, tuple]] = []
+        self.fetch_calls: list[tuple[str, tuple]] = []
         self.fetchval_result = None
-        self.fetchrow_result = None
+        self.fetch_result = []
 
     async def execute(self, query: str, *args) -> None:
         self.execute_calls.append((query, args))
@@ -21,9 +21,9 @@ class _FakeConnection:
         self.fetchval_calls.append((query, args))
         return self.fetchval_result
 
-    async def fetchrow(self, query: str, *args):
-        self.fetchrow_calls.append((query, args))
-        return self.fetchrow_result
+    async def fetch(self, query: str, *args):
+        self.fetch_calls.append((query, args))
+        return self.fetch_result
 
 
 class _FakeAcquire:
@@ -136,31 +136,40 @@ def test_validate_readonly_query_rejects_disallowed_tables():
         )
 
 
-def test_execute_guarded_query_uses_fetchrow():
+def test_execute_guarded_query_returns_all_rows():
     db = PostgresDatabase()
     db._pool = _FakePool()
-    db._pool.connection.fetchrow_result = {
-        "result_value": 120.5,
-        "result_unit": "EUR",
-        "result_label": "Lebensmitteleinkäufe",
-        "period_label": "January 2026",
-    }
+    db._pool.connection.fetch_result = [
+        {
+            "result_value": 120.5,
+            "result_unit": "EUR",
+            "result_label": "Lebensmitteleinkäufe",
+            "period_label": "January 2026",
+        },
+        {
+            "result_value": 42.0,
+            "result_unit": "EUR",
+            "result_label": "Kleidung",
+            "period_label": "January 2026",
+        },
+    ]
 
-    row = asyncio.run(
+    rows = asyncio.run(
         db.execute_guarded_query(
             (
                 "SELECT COALESCE(SUM(expense_total_amount_in_euros), 0) AS result_value, "
-                "'EUR' AS result_unit, 'Lebensmitteleinkäufe' AS result_label, "
+                "'EUR' AS result_unit, category AS result_label, "
                 "'January 2026' AS period_label "
-                "FROM fact_expenses WHERE user_id = $1"
+                "FROM fact_expenses WHERE user_id = $1 GROUP BY category"
             ),
             "user-123",
             ("fact_expenses",),
         )
     )
 
-    assert row["result_value"] == 120.5
-    calls = db._pool.connection.fetchrow_calls
+    assert len(rows) == 2
+    assert rows[0]["result_value"] == 120.5
+    calls = db._pool.connection.fetch_calls
     assert len(calls) == 1
     query, params = calls[0]
     assert "fact_expenses" in query

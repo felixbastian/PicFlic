@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict
 
 from langgraph.graph import StateGraph
@@ -11,6 +12,8 @@ from .db import SqliteDatabase
 from .models import ExpenseAnalysis, ImageRecord, NutritionAnalysis, TrackingTaskType
 from .query_utils import build_expense_query_plan, build_nutrition_query_plan, route_text_workflow
 from .utils import analyze_expense_receipt, analyze_nutrition_image, route_image_task
+
+logger = logging.getLogger(__name__)
 
 
 class _PictoState(TypedDict):
@@ -40,17 +43,37 @@ def _load(state: _PictoState, runtime: Any) -> dict:
 
 
 def _route(state: _PictoState, runtime: Any) -> dict:
+    logger.info(
+        "Routing image workflow",
+        extra={"event": "agent_route_image_input", "image_path": state["image_path"], "metadata": state.get("metadata", {})},
+    )
     decision = route_image_task(state["image_path"], state.get("metadata"))
+    logger.info(
+        "Image workflow routed",
+        extra={
+            "event": "agent_route_image_output",
+            "task_type": decision.task_type,
+            "next_node": "analyze_expense" if decision.task_type == "expense" else "analyze_nutrition",
+        },
+    )
     return {"task_type": decision.task_type}
 
 
 def _analyze_nutrition(state: _PictoState, runtime: Any) -> dict:
     analysis = analyze_nutrition_image(state["image_path"], state.get("metadata"))
+    logger.info(
+        "Completed nutrition analysis node",
+        extra={"event": "agent_nutrition_analysis", "analysis": analysis.to_dict()},
+    )
     return {"task_type": "nutrition", "analysis": analysis.to_dict()}
 
 
 def _analyze_expense(state: _PictoState, runtime: Any) -> dict:
     analysis = analyze_expense_receipt(state["image_path"], state.get("metadata"))
+    logger.info(
+        "Completed expense analysis node",
+        extra={"event": "agent_expense_analysis", "analysis": analysis.to_dict()},
+    )
     return {"task_type": "expense", "analysis": analysis.to_dict()}
 
 
@@ -67,6 +90,10 @@ def _store(state: _PictoState, runtime: Any) -> dict:
         analysis = NutritionAnalysis.model_validate(state["analysis"])
     record = ImageRecord.from_analysis(state["image_path"], task_type, analysis)
     db.store_record(record)
+    logger.info(
+        "Stored image workflow record",
+        extra={"event": "agent_record_stored", "record_id": record.id, "task_type": task_type},
+    )
     return {"task_type": task_type, "analysis": record.analysis.to_dict(), "record_id": record.id}
 
 
@@ -75,21 +102,48 @@ def _load_text(state: _TextState, runtime: Any) -> dict:
 
 
 def _route_text(state: _TextState, runtime: Any) -> dict:
+    logger.info(
+        "Routing text workflow",
+        extra={"event": "agent_route_text_input", "text": state["text"], "metadata": state.get("metadata", {})},
+    )
     decision = route_text_workflow(state["text"], state.get("metadata"))
+    logger.info(
+        "Text workflow routed",
+        extra={"event": "agent_route_text_output", "workflow_type": decision.workflow_type},
+    )
     return {"workflow_type": decision.workflow_type}
 
 
 def _build_expense_text_query(state: _TextState, runtime: Any) -> dict:
     plan = build_expense_query_plan(state["text"], state.get("metadata"))
+    logger.info(
+        "Built expense query plan",
+        extra={
+            "event": "agent_expense_query_plan",
+            "explanation": plan.explanation,
+            "sql_query": plan.sql_query,
+            "response_template": plan.response_template,
+        },
+    )
     return plan.model_dump()
 
 
 def _build_nutrition_text_query(state: _TextState, runtime: Any) -> dict:
     plan = build_nutrition_query_plan(state["text"], state.get("metadata"))
+    logger.info(
+        "Built nutrition query plan",
+        extra={
+            "event": "agent_nutrition_query_plan",
+            "explanation": plan.explanation,
+            "sql_query": plan.sql_query,
+            "response_template": plan.response_template,
+        },
+    )
     return plan.model_dump()
 
 
 def _echo_text(state: _TextState, runtime: Any) -> dict:
+    logger.info("Selected echo text workflow", extra={"event": "agent_echo_workflow"})
     return {"workflow_type": "echo"}
 
 

@@ -15,8 +15,9 @@ from . import create_default_agent, load_config
 from .agent import PictoAgent
 from .bot import create_telegram_application
 from .models import ImageRecord, NutritionAnalysis
-from .logging_config import setup_logging
 from .db import PostgresDatabase
+from .logging_config import setup_logging
+from .logging_context import bind_log_context, generate_process_id, reset_log_context
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,16 @@ def get_agent() -> PictoAgent:
 # Initialize bot application on startup
 _bot_application = None
 _db = None
+
+
+def _describe_update(update: Update) -> str:
+    if update.message is None:
+        return "non_message_update"
+    if update.message.photo:
+        return "photo_message"
+    if update.message.text:
+        return "text_message"
+    return "message_other"
 
 
 @asynccontextmanager
@@ -98,27 +109,49 @@ async def telegram_webhook(payload: dict) -> dict[str, str]:
         if _bot_application is None:
             logger.error("Bot application not initialized")
             raise HTTPException(status_code=500, detail="Bot not initialized")
-        
+
         update = Update.de_json(payload, _bot_application.bot)
-        
-        # Handle user creation/lookup when PostgreSQL is configured.
-        if _db is not None and update.effective_user and update.message and update.message.photo:
-            user_id = await _db.get_or_create_user(
-                telegram_user_id=update.effective_user.id,
-                username=update.effective_user.username,
-                first_name=update.effective_user.first_name,
-                last_name=update.effective_user.last_name,
+        context_token = bind_log_context(
+            process_id=generate_process_id("telegram"),
+            telegram_user_id=update.effective_user.id if update.effective_user else None,
+            update_id=update.update_id,
+            action="telegram_webhook",
+        )
+        try:
+            logger.info(
+                "Received Telegram webhook",
+                extra={
+                    "event": "telegram_webhook_received",
+                    "update_kind": _describe_update(update),
+                    "payload_keys": sorted(payload.keys()),
+                },
             )
-            pending_user_ids = _bot_application.bot_data.setdefault("_picflic_user_ids", {})
-            pending_user_ids[update.update_id] = user_id
-            logger.info(f"User {update.effective_user.username} has user_id {user_id}")
-        
-        await _bot_application.process_update(update)
-        logger.debug(f"Processed update from {update.effective_user.username if update.effective_user else 'unknown'}")
-        
-        return {"status": "ok"}
+
+            if _db is not None and update.effective_user and update.message and update.message.photo:
+                user_id = await _db.get_or_create_user(
+                    telegram_user_id=update.effective_user.id,
+                    username=update.effective_user.username,
+                    first_name=update.effective_user.first_name,
+                    last_name=update.effective_user.last_name,
+                )
+                bind_log_context(user_id=user_id)
+                pending_user_ids = _bot_application.bot_data.setdefault("_picflic_user_ids", {})
+                pending_user_ids[update.update_id] = user_id
+                logger.info(
+                    "Preloaded warehouse user id for photo webhook",
+                    extra={"event": "telegram_user_preloaded"},
+                )
+
+            await _bot_application.process_update(update)
+            logger.info(
+                "Processed Telegram webhook",
+                extra={"event": "telegram_webhook_processed", "update_kind": _describe_update(update)},
+            )
+            return {"status": "ok"}
+        finally:
+            reset_log_context(context_token)
     except Exception as e:
-        logger.exception(f"Failed to process webhook: {str(e)}")
+        logger.exception("Failed to process webhook: %s", str(e), extra={"event": "telegram_webhook_failed"})
         raise HTTPException(status_code=500, detail=f"Error processing update: {str(e)}")
 
 

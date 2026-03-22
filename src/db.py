@@ -61,6 +61,14 @@ def validate_readonly_query(query: str, allowed_tables: Sequence[str]) -> str:
             f"Query references disallowed tables: {', '.join(sorted(disallowed_tables))}."
         )
 
+    logger.info(
+        "Validated read-only query",
+        extra={
+            "event": "db_query_validated",
+            "allowed_tables": list(allowed_tables),
+            "sql_query": statement,
+        },
+    )
     return statement
 
 
@@ -150,16 +158,23 @@ class PostgresDatabase:
             self._pool = await asyncpg.create_pool(
                 **connect_kwargs,
             )
-            logger.info(f"Connected to PostgreSQL database at {self.host}:{self.port}")
+            logger.info(
+                "Connected to PostgreSQL database",
+                extra={"event": "db_connected", "host": self.host, "port": self.port, "database": self.database},
+            )
         except Exception as e:
-            logger.error(f"Failed to connect to PostgreSQL: {e}")
+            logger.error(
+                "Failed to connect to PostgreSQL: %s",
+                e,
+                extra={"event": "db_connect_failed", "host": self.host, "port": self.port, "database": self.database},
+            )
             raise
 
     async def disconnect(self) -> None:
         """Close connection pool."""
         if self._pool:
             await self._pool.close()
-            logger.info("Disconnected from PostgreSQL database")
+            logger.info("Disconnected from PostgreSQL database", extra={"event": "db_disconnected"})
 
     async def get_or_create_user(
         self,
@@ -191,7 +206,10 @@ class PostgresDatabase:
             )
 
             if existing_user:
-                logger.info(f"User {username} already exists with ID {existing_user}")
+                logger.info(
+                    "Warehouse user already exists",
+                    extra={"event": "warehouse_user_exists", "username": username, "resolved_user_id": existing_user},
+                )
                 return existing_user
 
             # Create new user
@@ -207,10 +225,13 @@ class PostgresDatabase:
                     first_name,
                     last_name,
                 )
-                logger.info(f"Created new user {username} with ID {user_id}")
+                logger.info(
+                    "Created warehouse user",
+                    extra={"event": "warehouse_user_created", "username": username, "resolved_user_id": user_id},
+                )
                 return user_id
             except Exception as e:
-                logger.error(f"Failed to create user: {e}")
+                logger.error("Failed to create user: %s", e, extra={"event": "warehouse_user_create_failed"})
                 raise
 
     async def store_consumption(self, user_id: str, analysis: ImageRecord | dict | "NutritionAnalysis") -> str:
@@ -315,15 +336,26 @@ class PostgresDatabase:
         query: str,
         user_id: str,
         allowed_tables: Sequence[str],
-    ) -> dict[str, Any]:
-        """Execute a validated read-only query for a given user and return one row."""
+        max_rows: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Execute a validated read-only query for a given user and return compact result rows."""
         if not self._pool:
             raise RuntimeError("Database not connected. Call connect() first.")
 
         statement = validate_readonly_query(query, allowed_tables)
 
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(statement, user_id)
-            if row is None:
-                return {}
-            return dict(row)
+            rows = await conn.fetch(statement, user_id)
+            trimmed_rows = [dict(row) for row in rows[:max_rows]]
+            logger.info(
+                "Executed guarded query",
+                extra={
+                    "event": "db_query_executed",
+                    "allowed_tables": list(allowed_tables),
+                    "sql_query": statement,
+                    "query_result": trimmed_rows,
+                    "row_count": len(rows),
+                    "truncated": len(rows) > max_rows,
+                },
+            )
+            return trimmed_rows

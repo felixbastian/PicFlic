@@ -14,6 +14,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 from .agent import PictoAgent
 from .db import PostgresDatabase
+from .logging_context import bind_log_context, generate_process_id, get_log_context, reset_log_context
 from .models import ExpenseAnalysis, NutritionAnalysis
 
 logger = logging.getLogger(__name__)
@@ -38,8 +39,23 @@ async def handle_message(
     postgres_db: Optional[PostgresDatabase] = None,
 ) -> None:
     """Handle incoming Telegram messages."""
+    context_token = bind_log_context(
+        process_id=get_log_context().get("process_id") or generate_process_id("telegram"),
+        telegram_user_id=update.effective_user.id if update.effective_user else None,
+        update_id=update.update_id,
+        action="telegram_message",
+    )
     try:
         user = update.effective_user.username if update.effective_user else "unknown"
+        logger.info(
+            "Handling Telegram message",
+            extra={
+                "event": "telegram_message_received",
+                "message_kind": "photo" if update.message.photo else "text",
+                "has_caption": bool(update.message.caption),
+                "text_preview": (update.message.text or "")[:200],
+            },
+        )
 
         if update.message.photo:
             logger.info("Processing photo from %s", user)
@@ -56,6 +72,14 @@ async def handle_message(
                     metadata["user_prompt"] = update.message.caption
 
                 result = agent.process_image(image_path, metadata=metadata)
+                logger.info(
+                    "Image workflow produced result",
+                    extra={
+                        "event": "agent_image_result",
+                        "task_type": result["task_type"],
+                        "analysis": result["analysis"],
+                    },
+                )
                 persistence_note: str | None = None
                 if postgres_db is not None and update.effective_user is not None:
                     persistence_note = await persist_result(update, context, postgres_db, result)
@@ -70,6 +94,15 @@ async def handle_message(
         else:
             logger.debug("Processing text message from %s", user)
             result = agent.process_text(update.message.text or "")
+            logger.info(
+                "Text workflow produced result",
+                extra={
+                    "event": "agent_text_result",
+                    "workflow_type": result["workflow_type"],
+                    "explanation": result.get("explanation"),
+                    "sql_query": result.get("sql_query"),
+                },
+            )
             if result["workflow_type"] == "echo":
                 await update.message.reply_text(update.message.text or "")
             else:
@@ -79,18 +112,27 @@ async def handle_message(
 
                 await update.message.reply_text(result["explanation"])
                 user_id = await resolve_user_id(update, context, postgres_db)
-                row = await postgres_db.execute_guarded_query(
+                rows = await postgres_db.execute_guarded_query(
                     result["sql_query"],
                     user_id,
                     _QUERY_ALLOWED_TABLES[result["workflow_type"]],
                 )
-                await update.message.reply_text(format_query_response(result, row))
+                logger.info(
+                    "Query workflow returned rows",
+                    extra={"event": "agent_query_rows", "rows": rows, "workflow_type": result["workflow_type"]},
+                )
+                if len(rows) <= 1:
+                    await update.message.reply_text(format_query_response(result, rows[0] if rows else {}))
+                else:
+                    await update.message.reply_text(format_multirow_query_response(result, rows))
     except Exception as e:
         logger.exception("Error handling message: %s", str(e))
         try:
             await update.message.reply_text("Sorry, an error occurred while processing your message.")
         except Exception:
             pass
+    finally:
+        reset_log_context(context_token)
 
 
 async def resolve_user_id(
@@ -112,6 +154,8 @@ async def resolve_user_id(
             last_name=update.effective_user.last_name,
         )
 
+    bind_log_context(user_id=user_id)
+    logger.info("Resolved warehouse user id", extra={"event": "warehouse_user_resolved"})
     return user_id
 
 
@@ -125,6 +169,8 @@ async def persist_result(
     user_id = await resolve_user_id(update, context, postgres_db)
     task_type = result["task_type"]
     analysis = result["analysis"]
+    bind_log_context(workflow=task_type)
+    logger.info("Persisting workflow result", extra={"event": "workflow_result_persist", "task_type": task_type})
 
     if task_type == "expense":
         await postgres_db.store_expense(user_id, ExpenseAnalysis.model_validate(analysis))
@@ -183,6 +229,33 @@ def format_query_response(result: Mapping[str, Any], row: Mapping[str, Any]) -> 
     }
     rendered = template.format(**payload)
     return " ".join(rendered.split())
+
+
+def format_multirow_query_response(
+    result: Mapping[str, Any],
+    rows: list[Mapping[str, Any]],
+    max_lines: int = 10,
+) -> str:
+    """Render a compact multi-row query response for grouped breakdowns."""
+    if not rows:
+        return "No results found for your query."
+
+    period_label = str(rows[0].get("period_label") or "the requested period").strip()
+    visible_rows = rows[:max_lines]
+    lines = [f"Breakdown for {period_label}:"]
+    for row in visible_rows:
+        result_label = str(row.get("result_label") or "unknown").strip()
+        result_value = _format_query_value(row.get("result_value"))
+        result_unit = str(row.get("result_unit") or "").strip()
+        if result_unit:
+            lines.append(f"{result_label}: {result_value} {result_unit}")
+        else:
+            lines.append(f"{result_label}: {result_value}")
+
+    if len(rows) > max_lines:
+        lines.append(f"... and {len(rows) - max_lines} more rows.")
+
+    return "\n".join(lines)
 
 
 def _format_query_value(value: Any) -> str:

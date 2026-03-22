@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Dict, Any, TypeVar
+import logging
 from pathlib import Path
+from typing import Any, Dict, TypeVar
 
 from openai import OpenAI
 
@@ -13,6 +14,7 @@ from .config import load_config
 from .models import EXPENSE_CATEGORIES, ExpenseAnalysis, NutritionAnalysis, RoutingDecision
 
 SchemaModel = TypeVar("SchemaModel", NutritionAnalysis, ExpenseAnalysis, RoutingDecision)
+logger = logging.getLogger(__name__)
 
 
 def route_image_task(image_path: str, metadata: Dict[str, Any] | None = None) -> RoutingDecision:
@@ -33,6 +35,7 @@ def analyze_nutrition_image(image_path: str, metadata: Dict[str, Any] | None = N
         "Estimate the pictured item's category, calories, macros, tags, and alcohol units. "
         "Return only the structured result. "
         "If the image is unclear, make the best conservative estimate and use category='unknown' when needed."
+        "Additional text instructions could include the amount or the content of the picture."
     )
     return _analyze_with_schema(image_path, metadata, prompt, NutritionAnalysis, "nutrition_analysis")
 
@@ -90,6 +93,19 @@ def _analyze_with_schema(
         image_data_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
         content.append({"type": "input_image", "image_url": image_data_url})
 
+    logger.info(
+        "Sending image LLM request",
+        extra={
+            "event": "llm_image_request",
+            "response_name": response_name,
+            "system_prompt": prompt,
+            "user_prompt_text": user_text,
+            "metadata": metadata,
+            "image_path": image_path,
+            "has_image": image_file.is_file(),
+        },
+    )
+
     response = client.responses.create(
         model=config.openai_model,
         input=[
@@ -109,6 +125,15 @@ def _analyze_with_schema(
                 "schema": response_model.model_json_schema(),
                 "strict": True,
             }
+        },
+    )
+    logger.info(
+        "Received image LLM response",
+        extra={
+            "event": "llm_image_response",
+            "response_name": response_name,
+            "model": config.openai_model,
+            "response_text": response.output_text,
         },
     )
 
