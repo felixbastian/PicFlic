@@ -5,16 +5,20 @@ from types import SimpleNamespace
 import pytest
 
 from src.bot import (
+    dispatch_due_vocabulary_reviews,
     format_multirow_query_response,
     format_query_response,
     format_result_response,
+    format_vocabulary_response,
+    get_recent_history,
     handle_message,
     persist_result,
+    remember_text_turn,
     resolve_user_id,
     start,
 )
 from src.logging_context import clear_log_context, get_log_context
-from src.models import ExpenseAnalysis, NutritionAnalysis
+from src.models import DueVocabularyReview, ExpenseAnalysis, NutritionAnalysis, VocabularyReviewResult
 
 
 @pytest.fixture(autouse=True)
@@ -83,8 +87,11 @@ class _FakePostgresDatabase:
         self.user_calls: list[dict] = []
         self.consumption_calls: list[dict] = []
         self.expense_calls: list[dict] = []
+        self.vocabulary_calls: list[dict] = []
         self.daily_calories_calls: list[str] = []
         self.query_calls: list[dict] = []
+        self.mark_prompted_calls: list[str] = []
+        self.record_review_calls: list[dict] = []
         self.query_result = [
             {
                 "result_value": Decimal("42.50"),
@@ -93,6 +100,8 @@ class _FakePostgresDatabase:
                 "period_label": "January 2026",
             }
         ]
+        self.due_reviews: list[DueVocabularyReview] = []
+        self.pending_review: DueVocabularyReview | None = None
 
     async def get_or_create_user(self, **kwargs) -> str:
         self.user_calls.append(kwargs)
@@ -106,6 +115,16 @@ class _FakePostgresDatabase:
         self.expense_calls.append({"user_id": user_id, "analysis": analysis})
         return "expense-123"
 
+    async def store_vocabulary(self, user_id: str, french_word: str, english_description: str) -> str:
+        self.vocabulary_calls.append(
+            {
+                "user_id": user_id,
+                "french_word": french_word,
+                "english_description": english_description,
+            }
+        )
+        return "vocabulary-123"
+
     async def get_daily_calories(self, user_id: str) -> int:
         self.daily_calories_calls.append(user_id)
         return 1800
@@ -118,6 +137,73 @@ class _FakePostgresDatabase:
         )
         return self.query_result
 
+    async def list_due_vocabulary_reviews(self, limit: int = 100) -> list[DueVocabularyReview]:
+        return self.due_reviews[:limit]
+
+    async def mark_vocabulary_review_prompted(self, vocabulary_id: str) -> None:
+        self.mark_prompted_calls.append(vocabulary_id)
+
+    async def get_pending_vocabulary_review(self, telegram_user_id: int) -> DueVocabularyReview | None:
+        return self.pending_review
+
+    async def record_vocabulary_review_result(
+        self,
+        vocabulary_id: str,
+        *,
+        correct: bool = False,
+        shelved: bool = False,
+    ) -> VocabularyReviewResult:
+        self.record_review_calls.append(
+            {"vocabulary_id": vocabulary_id, "correct": correct, "shelved": shelved}
+        )
+        if self.pending_review is None:
+            raise AssertionError("No pending review configured")
+        if shelved:
+            return VocabularyReviewResult(
+                vocabulary_id=vocabulary_id,
+                user_id=self.pending_review.user_id,
+                french_word=self.pending_review.french_word,
+                correct=False,
+                shelved=True,
+                finished=False,
+                current_review_stage=None,
+                next_review_at=None,
+            )
+        if correct:
+            return VocabularyReviewResult(
+                vocabulary_id=vocabulary_id,
+                user_id=self.pending_review.user_id,
+                french_word=self.pending_review.french_word,
+                correct=True,
+                shelved=False,
+                finished=False,
+                current_review_stage="three_days",
+                next_review_at=None,
+            )
+        return VocabularyReviewResult(
+            vocabulary_id=vocabulary_id,
+            user_id=self.pending_review.user_id,
+            french_word=self.pending_review.french_word,
+            correct=False,
+            shelved=False,
+            finished=False,
+            current_review_stage=self.pending_review.current_review_stage,
+            next_review_at=None,
+        )
+
+
+class _FakeTelegramBot:
+    def __init__(self) -> None:
+        self.sent_messages: list[dict] = []
+
+    async def send_message(self, chat_id: int, text: str) -> None:
+        self.sent_messages.append({"chat_id": chat_id, "text": text})
+
+
+class _FakeApplication:
+    def __init__(self) -> None:
+        self.bot = _FakeTelegramBot()
+
 
 def test_start_replies_with_welcome_message():
     message = _FakeMessage()
@@ -126,7 +212,7 @@ def test_start_replies_with_welcome_message():
     asyncio.run(start(update, SimpleNamespace()))
 
     assert message.replies == [
-        "Hi! Send me a photo of your food or a receipt, or ask about your tracked expenses and nutrition."
+        "Hi! Send me a photo of your food or a receipt, ask about your tracked expenses and nutrition, or send me a French word to practice vocabulary."
     ]
 
 
@@ -143,7 +229,7 @@ def test_handle_message_stores_fact_consumption():
         ),
         message=message,
     )
-    context = SimpleNamespace(application=SimpleNamespace(bot_data={}))
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
     postgres_db = _FakePostgresDatabase()
 
     asyncio.run(handle_message(update, context, agent, postgres_db))
@@ -196,7 +282,7 @@ def test_handle_message_stores_fact_expense():
         ),
         message=message,
     )
-    context = SimpleNamespace(application=SimpleNamespace(bot_data={}))
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
     postgres_db = _FakePostgresDatabase()
 
     asyncio.run(handle_message(update, context, agent, postgres_db))
@@ -255,7 +341,7 @@ def test_handle_message_passes_caption_as_user_prompt():
         message=message,
     )
 
-    asyncio.run(handle_message(update, SimpleNamespace(application=SimpleNamespace(bot_data={})), agent))
+    asyncio.run(handle_message(update, SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={}), agent))
 
     assert len(agent.image_calls) == 1
     assert agent.image_calls[0]["metadata"] == {
@@ -293,13 +379,13 @@ def test_handle_message_runs_expense_text_query():
         ),
         message=message,
     )
-    context = SimpleNamespace(application=SimpleNamespace(bot_data={}))
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
     postgres_db = _FakePostgresDatabase()
 
     asyncio.run(handle_message(update, context, agent, postgres_db))
 
     assert agent.text_calls[0]["text"] == message.text
-    assert agent.text_calls[0]["metadata"] is None
+    assert agent.text_calls[0]["metadata"] == {"recent_history": []}
     assert agent.text_calls[0]["log_context"]["process_id"].startswith("telegram-")
     assert agent.text_calls[0]["log_context"]["telegram_user_id"] == "42"
     assert agent.text_calls[0]["log_context"]["update_id"] == "1012"
@@ -351,7 +437,7 @@ def test_handle_message_runs_nutrition_text_query():
         ),
         message=message,
     )
-    context = SimpleNamespace(application=SimpleNamespace(bot_data={}))
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
     postgres_db = _FakePostgresDatabase()
     postgres_db.query_result = [
         {
@@ -400,7 +486,7 @@ def test_handle_message_formats_multirow_query_results():
         ),
         message=message,
     )
-    context = SimpleNamespace(application=SimpleNamespace(bot_data={}))
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
     postgres_db = _FakePostgresDatabase()
     postgres_db.query_result = [
         {
@@ -447,13 +533,187 @@ def test_handle_message_echoes_plain_text_when_orchestrator_says_echo():
         message=message,
     )
 
-    asyncio.run(handle_message(update, SimpleNamespace(application=SimpleNamespace(bot_data={})), agent))
+    asyncio.run(handle_message(update, SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={}), agent))
 
     assert agent.image_calls == []
     assert agent.text_calls[0]["text"] == "hello there"
-    assert agent.text_calls[0]["metadata"] is None
+    assert agent.text_calls[0]["metadata"] == {"recent_history": []}
     assert agent.text_calls[0]["log_context"]["process_id"].startswith("telegram-")
     assert message.replies == ["hello there"]
+
+
+def test_handle_message_stores_new_vocabulary_entry():
+    message = _FakeMessage()
+    message.photo = []
+    message.text = "bonjour"
+    agent = _FakeAgent(
+        text_result={
+            "workflow_type": "vocabulary",
+            "assistant_reply": "Bonjour means hello. It is a common greeting in French.",
+            "store_vocabulary": True,
+            "french_word": "bonjour",
+            "english_description": "hello; a common French greeting used when meeting someone.",
+        }
+    )
+    update = SimpleNamespace(
+        update_id=1016,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
+    postgres_db = _FakePostgresDatabase()
+
+    asyncio.run(handle_message(update, context, agent, postgres_db))
+
+    assert agent.text_calls[0]["metadata"] == {"recent_history": []}
+    assert postgres_db.vocabulary_calls == [
+        {
+            "user_id": "user-123",
+            "french_word": "bonjour",
+            "english_description": "hello; a common French greeting used when meeting someone.",
+        }
+    ]
+    assert message.replies == [
+        "Bonjour means hello. It is a common greeting in French.\n\nSaved to your vocabulary."
+    ]
+    assert get_recent_history(context) == [
+        {"role": "user", "text": "bonjour", "workflow": "vocabulary"},
+        {
+            "role": "assistant",
+            "text": "Bonjour means hello. It is a common greeting in French.\n\nSaved to your vocabulary.",
+            "workflow": "vocabulary",
+        },
+    ]
+
+
+def test_handle_message_answers_vocabulary_follow_up_without_storing_again():
+    message = _FakeMessage()
+    message.photo = []
+    message.text = "Can you give me an example sentence?"
+    agent = _FakeAgent(
+        text_result={
+            "workflow_type": "vocabulary",
+            "assistant_reply": 'Example: "Bonjour, comment vas-tu ?" means "Hello, how are you?"',
+            "store_vocabulary": False,
+            "french_word": None,
+            "english_description": None,
+        }
+    )
+    update = SimpleNamespace(
+        update_id=1017,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    context = SimpleNamespace(
+        application=SimpleNamespace(bot_data={}),
+        user_data={
+            "_picflic_recent_messages": [
+                {"role": "user", "text": "bonjour", "workflow": "vocabulary"},
+                {
+                    "role": "assistant",
+                    "text": "Bonjour means hello. It is a common greeting in French.",
+                    "workflow": "vocabulary",
+                },
+            ]
+        },
+    )
+    postgres_db = _FakePostgresDatabase()
+
+    asyncio.run(handle_message(update, context, agent, postgres_db))
+
+    assert agent.text_calls[0]["metadata"] == {
+        "recent_history": [
+            {"role": "user", "text": "bonjour", "workflow": "vocabulary"},
+            {
+                "role": "assistant",
+                "text": "Bonjour means hello. It is a common greeting in French.",
+                "workflow": "vocabulary",
+            },
+        ]
+    }
+    assert postgres_db.vocabulary_calls == []
+    assert message.replies == ['Example: "Bonjour, comment vas-tu ?" means "Hello, how are you?"']
+
+
+def test_handle_message_treats_pending_review_answer_as_review_flow():
+    message = _FakeMessage()
+    message.photo = []
+    message.text = "Bonjor"
+    agent = _FakeAgent(text_result={"workflow_type": "echo"})
+    update = SimpleNamespace(
+        update_id=1018,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
+    postgres_db = _FakePostgresDatabase()
+    postgres_db.pending_review = DueVocabularyReview(
+        vocabulary_id="vocab-1",
+        user_id="user-123",
+        telegram_user_id=42,
+        french_word="bonjour",
+        english_description="hello; a common French greeting.",
+        current_review_stage="day",
+        next_review_at="2026-03-23T10:00:00",
+    )
+
+    asyncio.run(handle_message(update, context, agent, postgres_db))
+
+    assert agent.text_calls == []
+    assert postgres_db.record_review_calls == [
+        {"vocabulary_id": "vocab-1", "correct": True, "shelved": False}
+    ]
+    assert message.replies == ['Correct. The French word is "bonjour". I will ask you again in 3 days.']
+
+
+def test_handle_message_shelves_pending_review():
+    message = _FakeMessage()
+    message.photo = []
+    message.text = "please shelf this one"
+    agent = _FakeAgent(text_result={"workflow_type": "echo"})
+    update = SimpleNamespace(
+        update_id=1019,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
+    postgres_db = _FakePostgresDatabase()
+    postgres_db.pending_review = DueVocabularyReview(
+        vocabulary_id="vocab-2",
+        user_id="user-123",
+        telegram_user_id=42,
+        french_word="fromage",
+        english_description="cheese",
+        current_review_stage="week",
+        next_review_at="2026-03-29T10:00:00",
+    )
+
+    asyncio.run(handle_message(update, context, agent, postgres_db))
+
+    assert postgres_db.record_review_calls == [
+        {"vocabulary_id": "vocab-2", "correct": False, "shelved": True}
+    ]
+    assert message.replies == ['Okay, I shelved "fromage". I will stop asking you this word.']
 
 
 def test_handle_message_reports_query_unavailable_without_postgres():
@@ -479,7 +739,7 @@ def test_handle_message_reports_query_unavailable_without_postgres():
         message=message,
     )
 
-    asyncio.run(handle_message(update, SimpleNamespace(application=SimpleNamespace(bot_data={})), agent))
+    asyncio.run(handle_message(update, SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={}), agent))
 
     assert message.replies == ["Database-backed questions are not available right now."]
 
@@ -520,7 +780,7 @@ def test_persist_result_creates_nutrition_entry_when_needed():
             last_name="Hans",
         ),
     )
-    context = SimpleNamespace(application=SimpleNamespace(bot_data={}))
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
     result = {
         "task_type": "nutrition",
         "analysis": {
@@ -551,7 +811,7 @@ def test_persist_result_creates_expense_entry():
             last_name="Hans",
         ),
     )
-    context = SimpleNamespace(application=SimpleNamespace(bot_data={}))
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
     result = {
         "task_type": "expense",
         "analysis": {
@@ -574,7 +834,7 @@ def test_persist_result_requires_effective_user():
         asyncio.run(
             persist_result(
                 SimpleNamespace(update_id=1004, effective_user=None),
-                SimpleNamespace(application=SimpleNamespace(bot_data={})),
+                SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={}),
                 _FakePostgresDatabase(),
                 {
                     "task_type": "nutrition",
@@ -608,6 +868,17 @@ def test_format_result_response_formats_expense():
         "Total: EUR 43.20\n"
         "Category: Lebensmitteleinkäufe\n"
         "Description: Groceries and toiletries"
+    )
+
+
+def test_format_vocabulary_response_appends_persistence_note():
+    response = format_vocabulary_response(
+        "Bonjour means hello. It is a common greeting in French.",
+        "Saved to your vocabulary.",
+    )
+
+    assert response == (
+        "Bonjour means hello. It is a common greeting in French.\n\nSaved to your vocabulary."
     )
 
 
@@ -653,3 +924,64 @@ def test_format_multirow_query_response_formats_compact_breakdown():
         "Kleidung: 145.47 EUR\n"
         "Lebensmitteleinkäufe: 84.50 EUR"
     )
+
+
+def test_remember_text_turn_keeps_recent_history_compact():
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
+
+    remember_text_turn(context, "bonjour", ["Bonjour means hello."], workflow_type="vocabulary")
+    remember_text_turn(
+        context,
+        "Can you give me an example sentence?",
+        ['Example: "Bonjour, comment vas-tu ?" means "Hello, how are you?"'],
+        workflow_type="vocabulary",
+    )
+
+    assert get_recent_history(context) == [
+        {
+            "role": "assistant",
+            "text": "Bonjour means hello.",
+            "workflow": "vocabulary",
+        },
+        {
+            "role": "user",
+            "text": "Can you give me an example sentence?",
+            "workflow": "vocabulary",
+        },
+        {
+            "role": "assistant",
+            "text": 'Example: "Bonjour, comment vas-tu ?" means "Hello, how are you?"',
+            "workflow": "vocabulary",
+        },
+    ]
+
+
+def test_dispatch_due_vocabulary_reviews_sends_one_prompt_per_due_review():
+    application = _FakeApplication()
+    postgres_db = _FakePostgresDatabase()
+    postgres_db.due_reviews = [
+        DueVocabularyReview(
+            vocabulary_id="vocab-1",
+            user_id="user-123",
+            telegram_user_id=42,
+            french_word="bonjour",
+            english_description="hello; a common French greeting.",
+            current_review_stage="day",
+            next_review_at="2026-03-23T10:00:00",
+        )
+    ]
+
+    sent_count = asyncio.run(dispatch_due_vocabulary_reviews(application, postgres_db))
+
+    assert sent_count == 1
+    assert application.bot.sent_messages == [
+        {
+            "chat_id": 42,
+            "text": (
+                "Vocabulary review:\n"
+                "What is the French word for:\nhello; a common French greeting.\n\n"
+                "Reply with the French word. Reply 'shelf' if you want me to stop reviewing this word."
+            ),
+        }
+    ]
+    assert postgres_db.mark_prompted_calls == ["vocab-1"]

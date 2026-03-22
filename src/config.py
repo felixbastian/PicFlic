@@ -24,6 +24,7 @@ class AppConfig:
     db_host: str | None = None
     db_port: int = 5432
     instance_connection_name: str | None = None
+    review_job_secret: str | None = None
 
     @property
     def postgres_enabled(self) -> bool:
@@ -51,6 +52,8 @@ def load_config(env_file: str | Path = DEFAULT_ENV_FILE) -> AppConfig:
         db_port=_resolve_port(os.getenv("DB_PORT") or env_values.get("DB_PORT")),
         instance_connection_name=os.getenv("INSTANCE_CONNECTION_NAME")
         or env_values.get("INSTANCE_CONNECTION_NAME"),
+        review_job_secret=os.getenv("PICTOAGENT_REVIEW_JOB_SECRET")
+        or env_values.get("PICTOAGENT_REVIEW_JOB_SECRET"),
     )
 
 

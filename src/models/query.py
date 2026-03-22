@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
-TextWorkflowType = Literal["echo", "expense_query", "nutrition_query"]
+TextWorkflowType = Literal["echo", "expense_query", "nutrition_query", "vocabulary"]
 
 
 class TextRoutingDecision(BaseModel):

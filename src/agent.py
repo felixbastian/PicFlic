@@ -10,7 +10,12 @@ from typing_extensions import NotRequired, TypedDict
 
 from .db import SqliteDatabase
 from .models import ExpenseAnalysis, ImageRecord, NutritionAnalysis, TrackingTaskType
-from .query_utils import build_expense_query_plan, build_nutrition_query_plan, route_text_workflow
+from .query_utils import (
+    build_expense_query_plan,
+    build_nutrition_query_plan,
+    build_vocabulary_response,
+    route_text_workflow,
+)
 from .utils import analyze_expense_receipt, analyze_nutrition_image, route_image_task
 
 logger = logging.getLogger(__name__)
@@ -31,6 +36,10 @@ class _TextState(TypedDict):
     explanation: NotRequired[str]
     sql_query: NotRequired[str]
     response_template: NotRequired[str]
+    assistant_reply: NotRequired[str]
+    store_vocabulary: NotRequired[bool]
+    french_word: NotRequired[str | None]
+    english_description: NotRequired[str | None]
 
 
 class _PictoContext(TypedDict):
@@ -147,6 +156,20 @@ def _echo_text(state: _TextState, runtime: Any) -> dict:
     return {"workflow_type": "echo"}
 
 
+def _build_vocabulary_text_response(state: _TextState, runtime: Any) -> dict:
+    result = build_vocabulary_response(state["text"], state.get("metadata"))
+    logger.info(
+        "Built vocabulary workflow result",
+        extra={
+            "event": "agent_vocabulary_result",
+            "store_vocabulary": result.store_vocabulary,
+            "french_word": result.french_word,
+            "english_description": result.english_description,
+        },
+    )
+    return result.model_dump()
+
+
 class PictoAgent:
     """An agent that routes photos and text to the correct specialized workflow."""
 
@@ -176,6 +199,7 @@ class PictoAgent:
         graph.add_node("route_text", _route_text)
         graph.add_node("build_expense_text_query", _build_expense_text_query)
         graph.add_node("build_nutrition_text_query", _build_nutrition_text_query)
+        graph.add_node("build_vocabulary_text_response", _build_vocabulary_text_response)
         graph.add_node("echo_text", _echo_text)
         graph.add_edge("load_text", "route_text")
         graph.add_conditional_edges(
@@ -184,12 +208,14 @@ class PictoAgent:
             {
                 "expense_query": "build_expense_text_query",
                 "nutrition_query": "build_nutrition_text_query",
+                "vocabulary": "build_vocabulary_text_response",
                 "echo": "echo_text",
             },
         )
         graph.set_entry_point("load_text")
         graph.set_finish_point("build_expense_text_query")
         graph.set_finish_point("build_nutrition_text_query")
+        graph.set_finish_point("build_vocabulary_text_response")
         graph.set_finish_point("echo_text")
         return graph.compile()
 

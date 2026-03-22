@@ -7,13 +7,13 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 from telegram import Update
 
 from . import create_default_agent, load_config
 from .agent import PictoAgent
-from .bot import create_telegram_application
+from .bot import create_telegram_application, dispatch_due_vocabulary_reviews
 from .models import ImageRecord, NutritionAnalysis
 from .db import PostgresDatabase
 from .logging_config import setup_logging
@@ -153,6 +153,33 @@ async def telegram_webhook(payload: dict) -> dict[str, str]:
     except Exception as e:
         logger.exception("Failed to process webhook: %s", str(e), extra={"event": "telegram_webhook_failed"})
         raise HTTPException(status_code=500, detail=f"Error processing update: {str(e)}")
+
+
+@app.post("/jobs/vocabulary-reviews/run")
+async def run_vocabulary_reviews(
+    x_job_secret: str | None = Header(default=None, alias="X-Job-Secret"),
+) -> dict[str, int | str]:
+    """Dispatch due vocabulary review prompts to Telegram."""
+    config = load_config()
+    if not config.review_job_secret or x_job_secret != config.review_job_secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if _bot_application is None or _db is None:
+        raise HTTPException(status_code=500, detail="Bot or database not initialized")
+
+    context_token = bind_log_context(
+        process_id=generate_process_id("vocabulary-review-job"),
+        action="vocabulary_review_job",
+        workflow="vocabulary_review",
+    )
+    try:
+        sent_count = await dispatch_due_vocabulary_reviews(_bot_application, _db)
+        logger.info(
+            "Dispatched due vocabulary reviews",
+            extra={"event": "vocabulary_review_job_completed", "sent_count": sent_count},
+        )
+        return {"status": "ok", "sent_count": sent_count}
+    finally:
+        reset_log_context(context_token)
 
 
 @app.get("/health")

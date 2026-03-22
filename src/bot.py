@@ -16,6 +16,12 @@ from .agent import PictoAgent
 from .db import PostgresDatabase
 from .logging_context import bind_log_context, generate_process_id, get_log_context, reset_log_context
 from .models import ExpenseAnalysis, NutritionAnalysis
+from .vocabulary_review import (
+    build_review_prompt,
+    build_review_response,
+    is_review_answer_correct,
+    is_shelf_request,
+)
 
 logger = logging.getLogger(__name__)
 _QUERY_ALLOWED_TABLES = {
@@ -23,12 +29,14 @@ _QUERY_ALLOWED_TABLES = {
     "nutrition_query": ("fact_consumption",),
 }
 _QUERY_TEMPLATE_FIELDS = {"result_value", "result_unit", "result_label", "period_label"}
+_RECENT_HISTORY_KEY = "_picflic_recent_messages"
+_RECENT_HISTORY_LIMIT = 3
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
     await update.message.reply_text(
-        "Hi! Send me a photo of your food or a receipt, or ask about your tracked expenses and nutrition."
+        "Hi! Send me a photo of your food or a receipt, ask about your tracked expenses and nutrition, or send me a French word to practice vocabulary."
     )
 
 
@@ -93,7 +101,41 @@ async def handle_message(
                 os.unlink(image_path)
         else:
             logger.debug("Processing text message from %s", user)
-            result = agent.process_text(update.message.text or "")
+            incoming_text = update.message.text or ""
+            if postgres_db is not None and update.effective_user is not None:
+                pending_review = await postgres_db.get_pending_vocabulary_review(update.effective_user.id)
+                if pending_review is not None:
+                    bind_log_context(user_id=pending_review.user_id, workflow="vocabulary_review")
+                    if is_shelf_request(incoming_text):
+                        review_result = await postgres_db.record_vocabulary_review_result(
+                            pending_review.vocabulary_id,
+                            shelved=True,
+                        )
+                    else:
+                        review_result = await postgres_db.record_vocabulary_review_result(
+                            pending_review.vocabulary_id,
+                            correct=is_review_answer_correct(pending_review.french_word, incoming_text),
+                        )
+                    response = build_review_response(pending_review, review_result)
+                    await update.message.reply_text(response)
+                    remember_text_turn(context, incoming_text, [response], workflow_type="vocabulary")
+                    logger.info(
+                        "Handled vocabulary review answer",
+                        extra={
+                            "event": "vocabulary_review_answered",
+                            "vocabulary_id": pending_review.vocabulary_id,
+                            "correct": review_result.correct,
+                            "shelved": review_result.shelved,
+                            "finished": review_result.finished,
+                        },
+                    )
+                    return
+
+            recent_history = get_recent_history(context)
+            result = agent.process_text(
+                incoming_text,
+                metadata={"recent_history": recent_history},
+            )
             logger.info(
                 "Text workflow produced result",
                 extra={
@@ -104,10 +146,37 @@ async def handle_message(
                 },
             )
             if result["workflow_type"] == "echo":
-                await update.message.reply_text(update.message.text or "")
+                echo_text = incoming_text
+                await update.message.reply_text(echo_text)
+                remember_text_turn(context, incoming_text, [echo_text], workflow_type="echo")
+            elif result["workflow_type"] == "vocabulary":
+                response = result["assistant_reply"]
+                if result.get("store_vocabulary") and postgres_db is not None:
+                    user_id = await resolve_user_id(update, context, postgres_db)
+                    await postgres_db.store_vocabulary(
+                        user_id,
+                        result["french_word"],
+                        result["english_description"],
+                    )
+                    response = format_vocabulary_response(response, "Saved to your vocabulary.")
+                    logger.info(
+                        "Stored vocabulary workflow result",
+                        extra={
+                            "event": "agent_vocabulary_stored",
+                            "french_word": result.get("french_word"),
+                        },
+                    )
+                await update.message.reply_text(response)
+                remember_text_turn(context, incoming_text, [response], workflow_type="vocabulary")
             else:
                 if postgres_db is None:
                     await update.message.reply_text("Database-backed questions are not available right now.")
+                    remember_text_turn(
+                        context,
+                        incoming_text,
+                        ["Database-backed questions are not available right now."],
+                        workflow_type=result["workflow_type"],
+                    )
                     return
 
                 await update.message.reply_text(result["explanation"])
@@ -121,10 +190,18 @@ async def handle_message(
                     "Query workflow returned rows",
                     extra={"event": "agent_query_rows", "rows": rows, "workflow_type": result["workflow_type"]},
                 )
+                response_messages = [result["explanation"]]
                 if len(rows) <= 1:
-                    await update.message.reply_text(format_query_response(result, rows[0] if rows else {}))
+                    response_messages.append(format_query_response(result, rows[0] if rows else {}))
                 else:
-                    await update.message.reply_text(format_multirow_query_response(result, rows))
+                    response_messages.append(format_multirow_query_response(result, rows))
+                await update.message.reply_text(response_messages[-1])
+                remember_text_turn(
+                    context,
+                    incoming_text,
+                    response_messages,
+                    workflow_type=result["workflow_type"],
+                )
     except Exception as e:
         logger.exception("Error handling message: %s", str(e))
         try:
@@ -208,6 +285,13 @@ def format_result_response(result: dict, persistence_note: str | None = None) ->
     return "\n".join(lines)
 
 
+def format_vocabulary_response(assistant_reply: str, persistence_note: str | None = None) -> str:
+    """Format the vocabulary reply for Telegram."""
+    if not persistence_note:
+        return assistant_reply
+    return f"{assistant_reply}\n\n{persistence_note}"
+
+
 def format_query_response(result: Mapping[str, Any], row: Mapping[str, Any]) -> str:
     """Render a planned SQL query result into a short Telegram message."""
     template = result.get("response_template") or (
@@ -266,6 +350,93 @@ def _format_query_value(value: Any) -> str:
     if isinstance(value, float):
         return str(int(value)) if value.is_integer() else f"{value:.2f}"
     return str(value)
+
+
+def get_recent_history(context: ContextTypes.DEFAULT_TYPE) -> list[dict[str, str]]:
+    """Return the recent text conversation history stored for the current Telegram user."""
+    user_data = getattr(context, "user_data", None)
+    if not isinstance(user_data, dict):
+        return []
+    history = user_data.get(_RECENT_HISTORY_KEY, [])
+    if not isinstance(history, list):
+        return []
+    recent_items: list[dict[str, str]] = []
+    for item in history[-_RECENT_HISTORY_LIMIT:]:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip()
+        text = str(item.get("text") or "").strip()
+        if not role or not text:
+            continue
+        normalized_item = {"role": role, "text": text}
+        workflow = str(item.get("workflow") or "").strip()
+        if workflow:
+            normalized_item["workflow"] = workflow
+        recent_items.append(normalized_item)
+    return recent_items
+
+
+def remember_text_turn(
+    context: ContextTypes.DEFAULT_TYPE,
+    user_text: str,
+    assistant_messages: list[str],
+    workflow_type: str,
+) -> None:
+    """Store the latest text turn so the orchestrator can use short-term chat history."""
+    user_data = getattr(context, "user_data", None)
+    if not isinstance(user_data, dict):
+        return
+
+    history = get_recent_history(context)
+    normalized_user_text = user_text.strip()
+    if normalized_user_text:
+        history.append({"role": "user", "text": normalized_user_text, "workflow": workflow_type})
+    for assistant_message in assistant_messages:
+        normalized_message = assistant_message.strip()
+        if normalized_message:
+            history.append({"role": "assistant", "text": normalized_message, "workflow": workflow_type})
+    user_data[_RECENT_HISTORY_KEY] = history[-_RECENT_HISTORY_LIMIT:]
+
+
+async def dispatch_due_vocabulary_reviews(
+    application: Application,
+    postgres_db: PostgresDatabase,
+    limit: int = 100,
+) -> int:
+    """Send due vocabulary review prompts, at most one pending prompt per user."""
+    due_reviews = await postgres_db.list_due_vocabulary_reviews(limit=limit)
+    sent_count = 0
+
+    for review in due_reviews:
+        context_token = bind_log_context(
+            process_id=get_log_context().get("process_id") or generate_process_id("vocab-review"),
+            user_id=review.user_id,
+            telegram_user_id=review.telegram_user_id,
+            action="vocabulary_review_dispatch",
+            workflow="vocabulary_review",
+        )
+        try:
+            prompt = build_review_prompt(review)
+            await application.bot.send_message(chat_id=review.telegram_user_id, text=prompt)
+            await postgres_db.mark_vocabulary_review_prompted(review.vocabulary_id)
+            sent_count += 1
+            logger.info(
+                "Sent vocabulary review prompt",
+                extra={
+                    "event": "vocabulary_review_sent",
+                    "vocabulary_id": review.vocabulary_id,
+                    "current_review_stage": review.current_review_stage,
+                },
+            )
+        except Exception:
+            logger.exception(
+                "Failed to send vocabulary review prompt",
+                extra={"event": "vocabulary_review_send_failed", "vocabulary_id": review.vocabulary_id},
+            )
+        finally:
+            reset_log_context(context_token)
+
+    return sent_count
 
 
 def create_telegram_application(

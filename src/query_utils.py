@@ -1,4 +1,4 @@
-"""Text-query planning helpers for PictoAgent."""
+"""Text planning helpers for PictoAgent."""
 
 from __future__ import annotations
 
@@ -10,13 +10,13 @@ from typing import Any
 from openai import OpenAI
 
 from .config import load_config
-from .models import EXPENSE_CATEGORIES, SQLQueryPlan, TextRoutingDecision
+from .models import EXPENSE_CATEGORIES, SQLQueryPlan, TextRoutingDecision, VocabularyWorkflowResult
 
 logger = logging.getLogger(__name__)
 
 
 def route_text_workflow(text: str, metadata: dict[str, Any] | None = None) -> TextRoutingDecision:
-    """Route a text message to echo, expense query, or nutrition query."""
+    """Route a text message to echo, query, or vocabulary workflows."""
     today = date.today().isoformat()
     prompt = (
         "You are an orchestrator for a personal tracking assistant. "
@@ -24,10 +24,14 @@ def route_text_workflow(text: str, metadata: dict[str, Any] | None = None) -> Te
         "monthly totals, categories, groceries, or similar historical spending questions. "
         "Choose workflow_type='nutrition_query' when the user asks about calories, meals, drinks, alcohol, or "
         "historical nutrition tracking data. "
+        "Choose workflow_type='vocabulary' when the user gives a French word or short phrase and wants its English "
+        "meaning, or when the user asks a follow-up question about vocabulary that was discussed in the recent "
+        "conversation history. A standalone French word or short French phrase like 'bonjour' should be treated as "
+        "a vocabulary request even if the user does not explicitly ask for a translation. "
         "Choose workflow_type='echo' for casual conversation or anything that is not a database lookup request. "
         "Return only the structured result."
     )
-    user_text = _build_query_user_text(text, metadata, today)
+    user_text = _build_text_user_text(text, metadata, today)
     return _call_text_with_schema(prompt, user_text, TextRoutingDecision, "text_routing_decision")
 
 
@@ -58,7 +62,7 @@ def build_expense_query_plan(text: str, metadata: dict[str, Any] | None = None) 
         "11. For grouped breakdowns, keep the result compact, for example with GROUP BY and LIMIT when appropriate. "
         "Return only the structured result."
     )
-    user_text = _build_query_user_text(text, metadata, today)
+    user_text = _build_text_user_text(text, metadata, today)
     return _call_text_with_schema(prompt, user_text, SQLQueryPlan, "expense_query_plan")
 
 
@@ -84,16 +88,49 @@ def build_nutrition_query_plan(text: str, metadata: dict[str, Any] | None = None
         "10. For grouped breakdowns, keep the result compact, for example with GROUP BY and LIMIT when appropriate. "
         "Return only the structured result."
     )
-    user_text = _build_query_user_text(text, metadata, today)
+    user_text = _build_text_user_text(text, metadata, today)
     return _call_text_with_schema(prompt, user_text, SQLQueryPlan, "nutrition_query_plan")
 
 
-def _build_query_user_text(text: str, metadata: dict[str, Any] | None, today: str) -> str:
+def build_vocabulary_response(
+    text: str,
+    metadata: dict[str, Any] | None = None,
+) -> VocabularyWorkflowResult:
+    """Build a structured vocabulary response, including whether it should be stored."""
+    today = date.today().isoformat()
+    prompt = (
+        "You are a French vocabulary trainer inside a personal assistant app. "
+        f"Today's date is {today}. "
+        "You will receive the current user message plus recent conversation history. "
+        "Decide whether this message introduces a new French vocabulary item that should be stored, or whether it is "
+        "just a follow-up question about vocabulary that was already discussed. "
+        "Rules: "
+        "1. If the current message is a French word or short French phrase to translate or explain, set "
+        "store_vocabulary=true. "
+        "2. If the user is asking a follow-up question about a word that was already explained in the recent history, "
+        "set store_vocabulary=false. "
+        "3. When store_vocabulary=true, return french_word as the normalized French word or short phrase, and "
+        "english_description as one concise English description that includes the meaning plus a short explanation. "
+        "4. When store_vocabulary=false, set french_word and english_description to null. "
+        "5. assistant_reply should always be a concise helpful answer in English. "
+        "6. If it is a new vocabulary item, assistant_reply should include the English meaning and a short "
+        "description. "
+        "7. If it is a follow-up, answer the follow-up directly without pretending to store a new word. "
+        "Return only the structured result."
+    )
+    user_text = _build_text_user_text(text, metadata, today)
+    result = _call_text_with_schema(prompt, user_text, VocabularyWorkflowResult, "vocabulary_response")
+    if result.store_vocabulary and (not result.french_word or not result.english_description):
+        raise ValueError("Vocabulary workflow must return french_word and english_description when storing.")
+    return result
+
+
+def _build_text_user_text(text: str, metadata: dict[str, Any] | None, today: str) -> str:
     metadata = metadata or {}
     return (
         f"Today's date: {today}\n"
         f"User message: {text}\n"
-        f"Metadata: {json.dumps(metadata)}"
+        f"Metadata: {json.dumps(metadata, ensure_ascii=False)}"
     )
 
 

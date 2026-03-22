@@ -11,7 +11,7 @@ from typing import Any, Iterable, Optional, Sequence
 import asyncpg
 
 from .config import AppConfig
-from .models import ExpenseAnalysis, ImageRecord
+from .models import DueVocabularyReview, ExpenseAnalysis, ImageRecord, VocabularyReviewResult, VocabularyReviewStage
 from .mcp import DatabaseMCPAdapter
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,24 @@ _DISALLOWED_SQL_PATTERN = re.compile(
 )
 _TABLE_REFERENCE_PATTERN = re.compile(r"\b(?:from|join)\s+([a-zA-Z_][\w\.]*)", re.IGNORECASE)
 _USER_FILTER_PATTERN = re.compile(r"\buser_id\s*=\s*\$1\b", re.IGNORECASE)
+_REVIEW_STAGE_INTERVAL_SQL: dict[VocabularyReviewStage, str] = {
+    "day": "INTERVAL '1 day'",
+    "three_days": "INTERVAL '3 days'",
+    "week": "INTERVAL '7 days'",
+    "month": "INTERVAL '1 month'",
+}
+_REVIEW_STAGE_FLAG_COLUMN: dict[VocabularyReviewStage, str] = {
+    "day": "correct_day",
+    "three_days": "correct_three_days",
+    "week": "correct_week",
+    "month": "correct_month",
+}
+_REVIEW_STAGE_NEXT: dict[VocabularyReviewStage, VocabularyReviewStage | None] = {
+    "day": "three_days",
+    "three_days": "week",
+    "week": "month",
+    "month": None,
+}
 
 
 def validate_readonly_query(query: str, allowed_tables: Sequence[str]) -> str:
@@ -200,27 +218,51 @@ class PostgresDatabase:
 
         async with self._pool.acquire() as conn:
             # Check if user exists
-            existing_user = await conn.fetchval(
-                "SELECT user_id FROM dim_user WHERE username = $1",
+            existing_user = await conn.fetchrow(
+                """
+                SELECT user_id
+                FROM dim_user
+                WHERE telegram_user_id = $1 OR username = $2
+                ORDER BY CASE WHEN telegram_user_id = $1 THEN 0 ELSE 1 END
+                LIMIT 1
+                """,
+                telegram_user_id,
                 username or str(telegram_user_id),
             )
 
             if existing_user:
+                resolved_user_id = str(existing_user["user_id"])
+                await conn.execute(
+                    """
+                    UPDATE dim_user
+                    SET telegram_user_id = $2,
+                        username = $3,
+                        first_name = $4,
+                        last_name = $5
+                    WHERE user_id = $1
+                    """,
+                    resolved_user_id,
+                    telegram_user_id,
+                    username or str(telegram_user_id),
+                    first_name,
+                    last_name,
+                )
                 logger.info(
                     "Warehouse user already exists",
-                    extra={"event": "warehouse_user_exists", "username": username, "resolved_user_id": existing_user},
+                    extra={"event": "warehouse_user_exists", "username": username, "resolved_user_id": resolved_user_id},
                 )
-                return existing_user
+                return resolved_user_id
 
             # Create new user
             user_id = str(uuid.uuid4())
             try:
                 await conn.execute(
                     """
-                    INSERT INTO dim_user (user_id, username, first_name, last_name)
-                    VALUES ($1, $2, $3, $4)
+                    INSERT INTO dim_user (user_id, telegram_user_id, username, first_name, last_name)
+                    VALUES ($1, $2, $3, $4, $5)
                     """,
                     user_id,
+                    telegram_user_id,
                     username or str(telegram_user_id),
                     first_name,
                     last_name,
@@ -330,6 +372,278 @@ class PostgresDatabase:
             except Exception as e:
                 logger.error("Failed to store expense for user %s: %s", user_id, e)
                 raise
+
+    async def store_vocabulary(self, user_id: str, french_word: str, english_description: str) -> str:
+        """Persist a vocabulary entry to fact_vocabulary for a user."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        vocabulary_id = str(uuid.uuid4())
+        async with self._pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO fact_vocabulary (
+                        vocabulary_id,
+                        user_id,
+                        french_word,
+                        english_description
+                    )
+                    VALUES ($1, $2, $3, $4)
+                    """,
+                    vocabulary_id,
+                    user_id,
+                    french_word,
+                    english_description,
+                )
+                logger.info(
+                    "Stored fact_vocabulary row %s for user %s",
+                    vocabulary_id,
+                    user_id,
+                    extra={
+                        "event": "vocabulary_stored",
+                        "vocabulary_id": vocabulary_id,
+                        "french_word": french_word,
+                    },
+                )
+                return vocabulary_id
+            except Exception as e:
+                logger.error("Failed to store vocabulary for user %s: %s", user_id, e)
+                raise
+
+    async def list_due_vocabulary_reviews(self, limit: int = 100) -> list[DueVocabularyReview]:
+        """Return at most one due vocabulary review per user."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT ON (v.user_id)
+                    v.vocabulary_id,
+                    v.user_id,
+                    u.telegram_user_id,
+                    v.french_word,
+                    v.english_description,
+                    v.current_review_stage,
+                    v.next_review_at
+                FROM fact_vocabulary v
+                JOIN dim_user u ON u.user_id = v.user_id
+                WHERE v.finished = FALSE
+                  AND v.shelf = FALSE
+                  AND v.awaiting_review = FALSE
+                  AND v.current_review_stage IS NOT NULL
+                  AND v.next_review_at IS NOT NULL
+                  AND v.next_review_at <= CURRENT_TIMESTAMP
+                  AND u.telegram_user_id IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM fact_vocabulary pending
+                      WHERE pending.user_id = v.user_id
+                        AND pending.awaiting_review = TRUE
+                        AND pending.finished = FALSE
+                        AND pending.shelf = FALSE
+                  )
+                ORDER BY v.user_id, v.next_review_at ASC, v.created_at ASC
+                LIMIT $1
+                """,
+                limit,
+            )
+            due_reviews = [DueVocabularyReview.model_validate(dict(row)) for row in rows]
+            logger.info(
+                "Loaded due vocabulary reviews",
+                extra={"event": "vocabulary_due_loaded", "due_review_count": len(due_reviews)},
+            )
+            return due_reviews
+
+    async def mark_vocabulary_review_prompted(self, vocabulary_id: str) -> None:
+        """Mark a vocabulary item as awaiting the user's answer."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE fact_vocabulary
+                SET awaiting_review = TRUE,
+                    last_review_prompted_at = CURRENT_TIMESTAMP
+                WHERE vocabulary_id = $1
+                """,
+                vocabulary_id,
+            )
+            logger.info(
+                "Marked vocabulary review as prompted",
+                extra={"event": "vocabulary_review_prompted", "vocabulary_id": vocabulary_id},
+            )
+
+    async def get_pending_vocabulary_review(self, telegram_user_id: int) -> DueVocabularyReview | None:
+        """Return the currently pending vocabulary review for a Telegram user, if any."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    v.vocabulary_id,
+                    v.user_id,
+                    u.telegram_user_id,
+                    v.french_word,
+                    v.english_description,
+                    v.current_review_stage,
+                    v.next_review_at
+                FROM fact_vocabulary v
+                JOIN dim_user u ON u.user_id = v.user_id
+                WHERE u.telegram_user_id = $1
+                  AND v.awaiting_review = TRUE
+                  AND v.finished = FALSE
+                  AND v.shelf = FALSE
+                ORDER BY v.last_review_prompted_at DESC NULLS LAST, v.created_at ASC
+                LIMIT 1
+                """,
+                telegram_user_id,
+            )
+            if row is None:
+                return None
+            return DueVocabularyReview.model_validate(dict(row))
+
+    async def record_vocabulary_review_result(
+        self,
+        vocabulary_id: str,
+        *,
+        correct: bool = False,
+        shelved: bool = False,
+    ) -> VocabularyReviewResult:
+        """Persist the result of a user's vocabulary review answer."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT vocabulary_id, user_id, french_word, current_review_stage
+                    FROM fact_vocabulary
+                    WHERE vocabulary_id = $1
+                    FOR UPDATE
+                    """,
+                    vocabulary_id,
+                )
+                if row is None:
+                    raise ValueError(f"Unknown vocabulary_id: {vocabulary_id}")
+
+                current_stage = row["current_review_stage"]
+                if shelved:
+                    await conn.execute(
+                        """
+                        UPDATE fact_vocabulary
+                        SET shelf = TRUE,
+                            awaiting_review = FALSE,
+                            current_review_stage = NULL,
+                            next_review_at = NULL
+                        WHERE vocabulary_id = $1
+                        """,
+                        vocabulary_id,
+                    )
+                    return VocabularyReviewResult(
+                        vocabulary_id=vocabulary_id,
+                        user_id=str(row["user_id"]),
+                        french_word=row["french_word"],
+                        correct=False,
+                        shelved=True,
+                        finished=False,
+                        current_review_stage=None,
+                        next_review_at=None,
+                    )
+
+                if current_stage not in _REVIEW_STAGE_INTERVAL_SQL:
+                    raise ValueError(f"Vocabulary {vocabulary_id} has no active review stage.")
+
+                stage = current_stage
+                if correct:
+                    flag_column = _REVIEW_STAGE_FLAG_COLUMN[stage]
+                    next_stage = _REVIEW_STAGE_NEXT[stage]
+                    if next_stage is None:
+                        await conn.execute(
+                            f"""
+                            UPDATE fact_vocabulary
+                            SET {flag_column} = TRUE,
+                                finished = TRUE,
+                                awaiting_review = FALSE,
+                                current_review_stage = NULL,
+                                next_review_at = NULL
+                            WHERE vocabulary_id = $1
+                            """,
+                            vocabulary_id,
+                        )
+                        return VocabularyReviewResult(
+                            vocabulary_id=vocabulary_id,
+                            user_id=str(row["user_id"]),
+                            french_word=row["french_word"],
+                            correct=True,
+                            shelved=False,
+                            finished=True,
+                            current_review_stage=None,
+                            next_review_at=None,
+                        )
+
+                    await conn.execute(
+                        f"""
+                        UPDATE fact_vocabulary
+                        SET {flag_column} = TRUE,
+                            awaiting_review = FALSE,
+                            current_review_stage = '{next_stage}',
+                            next_review_at = CURRENT_TIMESTAMP + {_REVIEW_STAGE_INTERVAL_SQL[next_stage]}
+                        WHERE vocabulary_id = $1
+                        """,
+                        vocabulary_id,
+                    )
+                    updated = await conn.fetchrow(
+                        """
+                        SELECT next_review_at, current_review_stage
+                        FROM fact_vocabulary
+                        WHERE vocabulary_id = $1
+                        """,
+                        vocabulary_id,
+                    )
+                    return VocabularyReviewResult(
+                        vocabulary_id=vocabulary_id,
+                        user_id=str(row["user_id"]),
+                        french_word=row["french_word"],
+                        correct=True,
+                        shelved=False,
+                        finished=False,
+                        current_review_stage=updated["current_review_stage"],
+                        next_review_at=updated["next_review_at"],
+                    )
+
+                await conn.execute(
+                    f"""
+                    UPDATE fact_vocabulary
+                    SET awaiting_review = FALSE,
+                        next_review_at = CURRENT_TIMESTAMP + {_REVIEW_STAGE_INTERVAL_SQL[stage]}
+                    WHERE vocabulary_id = $1
+                    """,
+                    vocabulary_id,
+                )
+                updated = await conn.fetchrow(
+                    """
+                    SELECT next_review_at, current_review_stage
+                    FROM fact_vocabulary
+                    WHERE vocabulary_id = $1
+                    """,
+                    vocabulary_id,
+                )
+                return VocabularyReviewResult(
+                    vocabulary_id=vocabulary_id,
+                    user_id=str(row["user_id"]),
+                    french_word=row["french_word"],
+                    correct=False,
+                    shelved=False,
+                    finished=False,
+                    current_review_stage=updated["current_review_stage"],
+                    next_review_at=updated["next_review_at"],
+                )
 
     async def execute_guarded_query(
         self,

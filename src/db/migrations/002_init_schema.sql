@@ -10,6 +10,7 @@ GRANT ALL ON SCHEMA public TO app_user;
 
 CREATE TABLE dim_user (
     user_id UUID PRIMARY KEY,
+    telegram_user_id BIGINT UNIQUE,
     username TEXT NOT NULL,
     first_name TEXT,
     last_name TEXT

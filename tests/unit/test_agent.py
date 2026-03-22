@@ -7,6 +7,7 @@ from src.models import (
     RoutingDecision,
     SQLQueryPlan,
     TextRoutingDecision,
+    VocabularyWorkflowResult,
 )
 
 
@@ -169,3 +170,28 @@ def test_process_text_routes_to_nutrition_query(tmp_path, monkeypatch):
     assert result["workflow_type"] == "nutrition_query"
     assert "tracked calories" in result["explanation"]
     assert "fact_consumption" in result["sql_query"]
+
+
+def test_process_text_routes_to_vocabulary(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent.route_text_workflow",
+        lambda text, metadata=None: TextRoutingDecision(workflow_type="vocabulary"),
+    )
+    monkeypatch.setattr(
+        "src.agent.build_vocabulary_response",
+        lambda text, metadata=None: VocabularyWorkflowResult(
+            workflow_type="vocabulary",
+            assistant_reply="Bonjour means hello. It is a common French greeting.",
+            store_vocabulary=True,
+            french_word="bonjour",
+            english_description="hello; a common French greeting used when meeting someone.",
+        ),
+    )
+    agent = PictoAgent(SqliteDatabase(tmp_path / "records.db"))
+
+    result = agent.process_text("bonjour", metadata={"recent_history": []})
+
+    assert result["workflow_type"] == "vocabulary"
+    assert result["store_vocabulary"] is True
+    assert result["french_word"] == "bonjour"
+    assert "hello" in result["assistant_reply"].lower()
