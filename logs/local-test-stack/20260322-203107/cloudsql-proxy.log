@@ -1,0 +1,6 @@
+2026/03/22 20:31:07 Authorizing with Application Default Credentials
+2026/03/22 20:31:07 [picflic-490614:europe-west1:picflic-database] Listening on 127.0.0.1:5432
+2026/03/22 20:31:07 The proxy has started successfully and is ready for new connections!
+2026/03/22 20:31:10 [picflic-490614:europe-west1:picflic-database] Accepted connection from 127.0.0.1:53845
+2026/03/22 20:36:31 [picflic-490614:europe-west1:picflic-database] client closed the connection
+2026/03/22 20:38:12 SIGINT signal received. Shutting down...

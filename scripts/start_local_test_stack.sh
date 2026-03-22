@@ -10,6 +10,7 @@ APP_PORT="${APP_PORT:-8080}"
 CLEAR_WEBHOOK_ON_EXIT="${CLEAR_WEBHOOK_ON_EXIT:-1}"
 TUNNEL_WAIT_SECONDS="${TUNNEL_WAIT_SECONDS:-90}"
 PUBLIC_DNS_WAIT_SECONDS="${PUBLIC_DNS_WAIT_SECONDS:-10}"
+LOG_DIR="${LOG_DIR:-$ROOT_DIR/logs/local-test-stack}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "$ENV_FILE not found."
@@ -41,10 +42,18 @@ APP_PID=""
 TUNNEL_PID=""
 PUBLIC_URL=""
 
-TMP_DIR="$(mktemp -d)"
-APP_LOG="$TMP_DIR/app.log"
-TUNNEL_LOG="$TMP_DIR/cloudflared.log"
-PROXY_LOG="$TMP_DIR/cloudsql-proxy.log"
+mkdir -p "$LOG_DIR"
+
+RUN_ID="$(date +%Y%m%d-%H%M%S)"
+RUN_DIR="$LOG_DIR/$RUN_ID"
+mkdir -p "$RUN_DIR"
+
+APP_LOG="$RUN_DIR/app.log"
+TUNNEL_LOG="$RUN_DIR/cloudflared.log"
+PROXY_LOG="$RUN_DIR/cloudsql-proxy.log"
+LATEST_APP_LOG="$LOG_DIR/app.log"
+LATEST_TUNNEL_LOG="$LOG_DIR/cloudflared.log"
+LATEST_PROXY_LOG="$LOG_DIR/cloudsql-proxy.log"
 FAILED="0"
 
 cleanup() {
@@ -55,10 +64,8 @@ cleanup() {
   [[ -n "$TUNNEL_PID" ]] && kill "$TUNNEL_PID" >/dev/null 2>&1
   [[ -n "$APP_PID" ]] && kill "$APP_PID" >/dev/null 2>&1
   [[ -n "$PROXY_PID" ]] && kill "$PROXY_PID" >/dev/null 2>&1
-  if [[ "$FAILED" == "0" ]]; then
-    rm -rf "$TMP_DIR"
-  else
-    echo "Debug logs kept in $TMP_DIR"
+  if [[ "$FAILED" == "1" ]]; then
+    echo "Debug logs kept in $RUN_DIR"
   fi
 }
 
@@ -78,12 +85,14 @@ if [[ "$should_start_proxy" == "1" ]]; then
   echo "Starting Cloud SQL proxy for $CONNECTION_NAME on port $PROXY_PORT"
   ./src/db/cloud-sql-proxy "$CONNECTION_NAME" --port "$PROXY_PORT" >"$PROXY_LOG" 2>&1 &
   PROXY_PID=$!
+  ln -sf "$PROXY_LOG" "$LATEST_PROXY_LOG"
   sleep 2
 fi
 
 echo "Starting local API on http://127.0.0.1:$APP_PORT"
 ENV_FILE="$ENV_FILE" .venv/bin/uvicorn src.api:app --host 0.0.0.0 --port "$APP_PORT" --reload >"$APP_LOG" 2>&1 &
 APP_PID=$!
+ln -sf "$APP_LOG" "$LATEST_APP_LOG"
 
 for _ in $(seq 1 30); do
   if curl -fsS "http://127.0.0.1:$APP_PORT/health" >/dev/null 2>&1; then
@@ -102,6 +111,7 @@ fi
 echo "Starting cloudflared tunnel"
 cloudflared tunnel --url "http://127.0.0.1:$APP_PORT" >"$TUNNEL_LOG" 2>&1 &
 TUNNEL_PID=$!
+ln -sf "$TUNNEL_LOG" "$LATEST_TUNNEL_LOG"
 
 for _ in $(seq 1 "$TUNNEL_WAIT_SECONDS"); do
   PUBLIC_URL="$(grep -Eo 'https://[-a-z0-9]+\.trycloudflare\.com' "$TUNNEL_LOG" | head -n 1 || true)"
@@ -155,6 +165,13 @@ echo "  app:    $APP_LOG"
 echo "  tunnel: $TUNNEL_LOG"
 if [[ -n "$PROXY_PID" ]]; then
   echo "  proxy:  $PROXY_LOG"
+fi
+echo
+echo "Latest symlinks:"
+echo "  app:    $LATEST_APP_LOG"
+echo "  tunnel: $LATEST_TUNNEL_LOG"
+if [[ -n "$PROXY_PID" ]]; then
+  echo "  proxy:  $LATEST_PROXY_LOG"
 fi
 echo
 echo "Press Ctrl+C to stop everything."

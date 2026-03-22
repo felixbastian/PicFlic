@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.bot import (
+    format_multirow_query_response,
     format_query_response,
     format_result_response,
     handle_message,
@@ -12,7 +13,15 @@ from src.bot import (
     resolve_user_id,
     start,
 )
+from src.logging_context import clear_log_context, get_log_context
 from src.models import ExpenseAnalysis, NutritionAnalysis
+
+
+@pytest.fixture(autouse=True)
+def _clear_logging_context_between_tests():
+    clear_log_context()
+    yield
+    clear_log_context()
 
 
 class _FakeFile:
@@ -59,11 +68,13 @@ class _FakeAgent:
         self.text_result = text_result or {"workflow_type": "echo"}
 
     def process_image(self, image_path: str, metadata: dict | None = None) -> dict:
-        self.image_calls.append({"image_path": image_path, "metadata": metadata})
+        self.image_calls.append(
+            {"image_path": image_path, "metadata": metadata, "log_context": get_log_context()}
+        )
         return self.image_result
 
     def process_text(self, text: str, metadata: dict | None = None) -> dict:
-        self.text_calls.append({"text": text, "metadata": metadata})
+        self.text_calls.append({"text": text, "metadata": metadata, "log_context": get_log_context()})
         return self.text_result
 
 
@@ -74,12 +85,14 @@ class _FakePostgresDatabase:
         self.expense_calls: list[dict] = []
         self.daily_calories_calls: list[str] = []
         self.query_calls: list[dict] = []
-        self.query_result = {
-            "result_value": Decimal("42.50"),
-            "result_unit": "EUR",
-            "result_label": "Lebensmitteleinkäufe",
-            "period_label": "January 2026",
-        }
+        self.query_result = [
+            {
+                "result_value": Decimal("42.50"),
+                "result_unit": "EUR",
+                "result_label": "Lebensmitteleinkäufe",
+                "period_label": "January 2026",
+            }
+        ]
 
     async def get_or_create_user(self, **kwargs) -> str:
         self.user_calls.append(kwargs)
@@ -97,7 +110,9 @@ class _FakePostgresDatabase:
         self.daily_calories_calls.append(user_id)
         return 1800
 
-    async def execute_guarded_query(self, query: str, user_id: str, allowed_tables: tuple[str, ...]) -> dict:
+    async def execute_guarded_query(
+        self, query: str, user_id: str, allowed_tables: tuple[str, ...]
+    ) -> list[dict]:
         self.query_calls.append(
             {"query": query, "user_id": user_id, "allowed_tables": allowed_tables}
         )
@@ -135,6 +150,9 @@ def test_handle_message_stores_fact_consumption():
 
     assert len(agent.image_calls) == 1
     assert agent.image_calls[0]["metadata"] == {}
+    assert agent.image_calls[0]["log_context"]["process_id"].startswith("telegram-")
+    assert agent.image_calls[0]["log_context"]["telegram_user_id"] == "42"
+    assert agent.image_calls[0]["log_context"]["update_id"] == "1001"
     assert postgres_db.user_calls == [
         {
             "telegram_user_id": 42,
@@ -280,7 +298,12 @@ def test_handle_message_runs_expense_text_query():
 
     asyncio.run(handle_message(update, context, agent, postgres_db))
 
-    assert agent.text_calls == [{"text": message.text, "metadata": None}]
+    assert agent.text_calls[0]["text"] == message.text
+    assert agent.text_calls[0]["metadata"] is None
+    assert agent.text_calls[0]["log_context"]["process_id"].startswith("telegram-")
+    assert agent.text_calls[0]["log_context"]["telegram_user_id"] == "42"
+    assert agent.text_calls[0]["log_context"]["update_id"] == "1012"
+    assert agent.text_calls[0]["log_context"]["action"] == "telegram_message"
     assert postgres_db.query_calls == [
         {
             "query": (
@@ -330,12 +353,14 @@ def test_handle_message_runs_nutrition_text_query():
     )
     context = SimpleNamespace(application=SimpleNamespace(bot_data={}))
     postgres_db = _FakePostgresDatabase()
-    postgres_db.query_result = {
-        "result_value": 1800,
-        "result_unit": "kcal",
-        "result_label": "calories",
-        "period_label": "March 2026",
-    }
+    postgres_db.query_result = [
+        {
+            "result_value": 1800,
+            "result_unit": "kcal",
+            "result_label": "calories",
+            "period_label": "March 2026",
+        }
+    ]
 
     asyncio.run(handle_message(update, context, agent, postgres_db))
 
@@ -343,6 +368,66 @@ def test_handle_message_runs_nutrition_text_query():
     assert message.replies == [
         "I am looking for all tracked calories in March 2026.",
         "You have consumed 1800 kcal of calories in March 2026.",
+    ]
+
+
+def test_handle_message_formats_multirow_query_results():
+    message = _FakeMessage()
+    message.photo = []
+    message.text = "Wieviel habe ich diesen Monat in den verschiedenen Kategorien ausgegeben?"
+    agent = _FakeAgent(
+        text_result={
+            "workflow_type": "expense_query",
+            "explanation": "I am looking for total expenses by category for this month (March 2026).",
+            "sql_query": (
+                "SELECT COALESCE(SUM(expense_total_amount_in_euros), 0) AS result_value, "
+                "'EUR' AS result_unit, category AS result_label, "
+                "'March 2026' AS period_label "
+                "FROM fact_expenses WHERE user_id = $1 GROUP BY category ORDER BY result_value DESC"
+            ),
+            "response_template": (
+                "For {period_label}, you spent {result_value} {result_unit} in {result_label}."
+            ),
+        }
+    )
+    update = SimpleNamespace(
+        update_id=1015,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}))
+    postgres_db = _FakePostgresDatabase()
+    postgres_db.query_result = [
+        {
+            "result_value": Decimal("145.47"),
+            "result_unit": "EUR",
+            "result_label": "Kleidung",
+            "period_label": "March 2026",
+        },
+        {
+            "result_value": Decimal("84.50"),
+            "result_unit": "EUR",
+            "result_label": "Lebensmitteleinkäufe",
+            "period_label": "March 2026",
+        },
+        {
+            "result_value": Decimal("25.00"),
+            "result_unit": "EUR",
+            "result_label": "Bäcker",
+            "period_label": "March 2026",
+        },
+    ]
+
+    asyncio.run(handle_message(update, context, agent, postgres_db))
+
+    assert message.replies == [
+        "I am looking for total expenses by category for this month (March 2026).",
+        "Breakdown for March 2026:\nKleidung: 145.47 EUR\nLebensmitteleinkäufe: 84.50 EUR\nBäcker: 25 EUR",
     ]
 
 
@@ -365,7 +450,9 @@ def test_handle_message_echoes_plain_text_when_orchestrator_says_echo():
     asyncio.run(handle_message(update, SimpleNamespace(application=SimpleNamespace(bot_data={})), agent))
 
     assert agent.image_calls == []
-    assert agent.text_calls == [{"text": "hello there", "metadata": None}]
+    assert agent.text_calls[0]["text"] == "hello there"
+    assert agent.text_calls[0]["metadata"] is None
+    assert agent.text_calls[0]["log_context"]["process_id"].startswith("telegram-")
     assert message.replies == ["hello there"]
 
 
@@ -410,9 +497,14 @@ def test_resolve_user_id_uses_pending_mapping():
         ),
     )
 
-    user_id = asyncio.run(resolve_user_id(update, context, postgres_db))
+    async def _resolve():
+        user_id = await resolve_user_id(update, context, postgres_db)
+        return user_id, get_log_context()
+
+    user_id, log_context = asyncio.run(_resolve())
 
     assert user_id == "user-from-webhook"
+    assert log_context["user_id"] == "user-from-webhook"
     assert postgres_db.user_calls == []
     assert context.application.bot_data["_picflic_user_ids"] == {}
 
@@ -535,3 +627,29 @@ def test_format_query_response_uses_safe_template_fields():
     )
 
     assert response == "You spent a total of 42.50 EUR on Lebensmitteleinkäufe in January 2026."
+
+
+def test_format_multirow_query_response_formats_compact_breakdown():
+    response = format_multirow_query_response(
+        {},
+        [
+            {
+                "result_value": Decimal("145.47"),
+                "result_unit": "EUR",
+                "result_label": "Kleidung",
+                "period_label": "March 2026",
+            },
+            {
+                "result_value": Decimal("84.50"),
+                "result_unit": "EUR",
+                "result_label": "Lebensmitteleinkäufe",
+                "period_label": "March 2026",
+            },
+        ],
+    )
+
+    assert response == (
+        "Breakdown for March 2026:\n"
+        "Kleidung: 145.47 EUR\n"
+        "Lebensmitteleinkäufe: 84.50 EUR"
+    )

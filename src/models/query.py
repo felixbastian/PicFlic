@@ -28,7 +28,8 @@ class SQLQueryPlan(BaseModel):
     sql_query: str = Field(description="A single safe read-only PostgreSQL SELECT query using $1 for user_id.")
     response_template: str = Field(
         description=(
-            "A short natural-language answer that uses only the placeholders "
-            "{result_value}, {result_unit}, {result_label}, {period_label}."
+            "A short natural-language answer for single-row responses that uses only the placeholders "
+            "{result_value}, {result_unit}, {result_label}, {period_label}. "
+            "Multi-row responses are formatted by the application."
         )
     )

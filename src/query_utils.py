@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date
 from typing import Any
 
@@ -10,6 +11,8 @@ from openai import OpenAI
 
 from .config import load_config
 from .models import EXPENSE_CATEGORIES, SQLQueryPlan, TextRoutingDecision
+
+logger = logging.getLogger(__name__)
 
 
 def route_text_workflow(text: str, metadata: dict[str, Any] | None = None) -> TextRoutingDecision:
@@ -43,14 +46,16 @@ def build_expense_query_plan(text: str, metadata: dict[str, Any] | None = None) 
         "2. Always filter to the current user with `user_id = $1`. "
         "3. Query only fact_expenses. "
         "3a. Do not use CTEs, comments, DDL, DML, or multiple statements. "
-        "4. Return exactly one row with the aliases result_value, result_unit, result_label, period_label. "
-        "5. Use COALESCE for numeric aggregates. "
-        "6. Use explicit date ranges when the user names a month. "
-        "7. Map groceries or lebensmittel requests to the category 'Lebensmitteleinkäufe'. "
-        "8. explanation must be a short sentence like: I am looking for all expenses in the category "
+        "4. Build efficient queries. For breakdown questions, return a compact grouped result and avoid huge result sets. "
+        "5. Prefer the aliases result_value, result_unit, result_label, period_label. "
+        "6. Use COALESCE for numeric aggregates when aggregating. "
+        "7. Use explicit date ranges when the user names a month. "
+        "8. Map groceries or lebensmittel requests to the category 'Lebensmitteleinkäufe'. "
+        "9. explanation must be a short sentence like: I am looking for all expenses in the category "
         "\"Lebensmitteleinkäufe\" for January 2026. "
-        "9. response_template must be a short sentence using only {result_value}, {result_unit}, "
+        "10. response_template must be a short sentence using only {result_value}, {result_unit}, "
         "{result_label}, and {period_label}. "
+        "11. For grouped breakdowns, keep the result compact, for example with GROUP BY and LIMIT when appropriate. "
         "Return only the structured result."
     )
     user_text = _build_query_user_text(text, metadata, today)
@@ -69,12 +74,14 @@ def build_nutrition_query_plan(text: str, metadata: dict[str, Any] | None = None
         "2. Always filter to the current user with `user_id = $1`. "
         "3. Query only fact_consumption. "
         "3a. Do not use CTEs, comments, DDL, DML, or multiple statements. "
-        "4. Return exactly one row with the aliases result_value, result_unit, result_label, period_label. "
-        "5. Use COALESCE for numeric aggregates. "
-        "6. Use explicit date ranges when the user names a month. "
-        "7. explanation must be a short sentence like: I am looking for all tracked calories in March 2026. "
-        "8. response_template must be a short sentence using only {result_value}, {result_unit}, "
+        "4. Build efficient queries. For breakdown questions, return a compact grouped result and avoid huge result sets. "
+        "5. Prefer the aliases result_value, result_unit, result_label, period_label. "
+        "6. Use COALESCE for numeric aggregates when aggregating. "
+        "7. Use explicit date ranges when the user names a month. "
+        "8. explanation must be a short sentence like: I am looking for all tracked calories in March 2026. "
+        "9. response_template must be a short sentence using only {result_value}, {result_unit}, "
         "{result_label}, and {period_label}. "
+        "10. For grouped breakdowns, keep the result compact, for example with GROUP BY and LIMIT when appropriate. "
         "Return only the structured result."
     )
     user_text = _build_query_user_text(text, metadata, today)
@@ -98,6 +105,15 @@ def _call_text_with_schema(prompt: str, user_text: str, response_model: type, re
         )
 
     client = OpenAI(api_key=config.openai_api_key)
+    logger.info(
+        "Sending text LLM request",
+        extra={
+            "event": "llm_text_request",
+            "response_name": response_name,
+            "system_prompt": prompt,
+            "user_prompt_text": user_text,
+        },
+    )
     response = client.responses.create(
         model=config.openai_model,
         input=[
@@ -117,6 +133,15 @@ def _call_text_with_schema(prompt: str, user_text: str, response_model: type, re
                 "schema": response_model.model_json_schema(),
                 "strict": True,
             }
+        },
+    )
+    logger.info(
+        "Received text LLM response",
+        extra={
+            "event": "llm_text_response",
+            "response_name": response_name,
+            "model": config.openai_model,
+            "response_text": response.output_text,
         },
     )
     return response_model.model_validate_json(response.output_text)
