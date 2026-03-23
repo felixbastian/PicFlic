@@ -1,0 +1,29 @@
+INFO:     Will watch for changes in these directories: ['/Users/felix.hans/Desktop/privat/PicFlic']
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     Started reloader process [77871] using StatReload
+INFO:     Started server process [77877]
+INFO:     Waiting for application startup.
+{"timestamp": "2026-03-22T22:45:38", "level": "INFO", "logger": "src.db", "message": "Connected to PostgreSQL database", "process_id": "-", "user_id": "-", "telegram_user_id": "-", "update_id": "-", "action": "-", "workflow": "-", "os_pid": 77877, "event": "db_connected", "host": "127.0.0.1", "port": 5432, "database": "app_db"}
+{"timestamp": "2026-03-22T22:45:38", "level": "INFO", "logger": "src.api", "message": "Creating Telegram application", "process_id": "-", "user_id": "-", "telegram_user_id": "-", "update_id": "-", "action": "-", "workflow": "-", "os_pid": 77877}
+{"timestamp": "2026-03-22T22:45:38", "level": "INFO", "logger": "src.api", "message": "Initializing Telegram application", "process_id": "-", "user_id": "-", "telegram_user_id": "-", "update_id": "-", "action": "-", "workflow": "-", "os_pid": 77877}
+{"timestamp": "2026-03-22T22:45:38", "level": "INFO", "logger": "src.api", "message": "Telegram application initialized successfully", "process_id": "-", "user_id": "-", "telegram_user_id": "-", "update_id": "-", "action": "-", "workflow": "-", "os_pid": 77877}
+INFO:     Application startup complete.
+INFO:     127.0.0.1:57329 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57330 - "GET /health HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+{"timestamp": "2026-03-22T22:47:43", "level": "INFO", "logger": "src.api", "message": "Shutting down Telegram application", "process_id": "-", "user_id": "-", "telegram_user_id": "-", "update_id": "-", "action": "-", "workflow": "-", "os_pid": 77877}
+ERROR:    Traceback (most recent call last):
+  File "/Users/felix.hans/Desktop/privat/PicFlic/.venv/lib/python3.11/site-packages/starlette/routing.py", line 694, in lifespan
+    async with self.lifespan_context(app) as maybe_state:
+  File "/opt/homebrew/Cellar/python@3.11/3.11.15/Frameworks/Python.framework/Versions/3.11/lib/python3.11/contextlib.py", line 217, in __aexit__
+    await anext(self.gen)
+  File "/Users/felix.hans/Desktop/privat/PicFlic/src/api.py", line 95, in lifespan
+    await _bot_application.stop()
+  File "/Users/felix.hans/Desktop/privat/PicFlic/.venv/lib/python3.11/site-packages/telegram/ext/_application.py", line 663, in stop
+    raise RuntimeError("This Application is not running!")
+RuntimeError: This Application is not running!
+
+ERROR:    Application shutdown failed. Exiting.
+INFO:     Finished server process [77877]
+INFO:     Stopping reloader process [77871]

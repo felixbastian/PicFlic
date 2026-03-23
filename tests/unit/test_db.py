@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 
 import pytest
 
@@ -11,8 +12,17 @@ class _FakeConnection:
         self.execute_calls: list[tuple[str, tuple]] = []
         self.fetchval_calls: list[tuple[str, tuple]] = []
         self.fetch_calls: list[tuple[str, tuple]] = []
+        self.fetchrow_calls: list[tuple[str, tuple]] = []
         self.fetchval_result = None
         self.fetch_result = []
+        self.fetchrow_results = []
+
+    class _Transaction:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
 
     async def execute(self, query: str, *args) -> None:
         self.execute_calls.append((query, args))
@@ -24,6 +34,15 @@ class _FakeConnection:
     async def fetch(self, query: str, *args):
         self.fetch_calls.append((query, args))
         return self.fetch_result
+
+    async def fetchrow(self, query: str, *args):
+        self.fetchrow_calls.append((query, args))
+        if self.fetchrow_results:
+            return self.fetchrow_results.pop(0)
+        return None
+
+    def transaction(self):
+        return self._Transaction()
 
 
 class _FakeAcquire:
@@ -108,6 +127,97 @@ def test_store_expense_inserts_fact_row():
     assert params[2] == "Groceries and toiletries"
     assert params[3] == 43.20
     assert params[4] == "Lebensmitteleinkäufe"
+
+
+def test_store_vocabulary_inserts_fact_row():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+
+    vocabulary_id = asyncio.run(
+        db.store_vocabulary(
+            "user-123",
+            "bonjour",
+            "hello; a common French greeting used when meeting someone.",
+        )
+    )
+
+    assert vocabulary_id
+    calls = db._pool.connection.execute_calls
+    assert len(calls) == 1
+    query, params = calls[0]
+    assert "INSERT INTO fact_vocabulary" in query
+    assert params[0] == vocabulary_id
+    assert params[1] == "user-123"
+    assert params[2] == "bonjour"
+    assert params[3] == "hello; a common French greeting used when meeting someone."
+
+
+def test_list_due_vocabulary_reviews_returns_due_rows():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+    db._pool.connection.fetch_result = [
+        {
+            "vocabulary_id": "vocab-1",
+            "user_id": "user-123",
+            "telegram_user_id": 42,
+            "french_word": "bonjour",
+            "english_description": "hello; a common French greeting.",
+            "current_review_stage": "day",
+            "next_review_at": datetime(2026, 3, 23, 10, 0, 0),
+        }
+    ]
+
+    rows = asyncio.run(db.list_due_vocabulary_reviews())
+
+    assert len(rows) == 1
+    assert rows[0].vocabulary_id == "vocab-1"
+    assert rows[0].telegram_user_id == 42
+
+
+def test_record_vocabulary_review_result_advances_stage_on_correct_answer():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+    db._pool.connection.fetchrow_results = [
+        {
+            "vocabulary_id": "vocab-1",
+            "user_id": "user-123",
+            "french_word": "bonjour",
+            "current_review_stage": "day",
+        },
+        {
+            "next_review_at": datetime(2026, 3, 26, 10, 0, 0),
+            "current_review_stage": "three_days",
+        },
+    ]
+
+    result = asyncio.run(db.record_vocabulary_review_result("vocab-1", correct=True))
+
+    assert result.correct is True
+    assert result.current_review_stage == "three_days"
+    query, params = db._pool.connection.execute_calls[0]
+    assert "correct_day = TRUE" in query
+    assert "current_review_stage = 'three_days'" in query
+    assert params == ("vocab-1",)
+
+
+def test_record_vocabulary_review_result_shelves_word():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+    db._pool.connection.fetchrow_results = [
+        {
+            "vocabulary_id": "vocab-2",
+            "user_id": "user-123",
+            "french_word": "fromage",
+            "current_review_stage": "week",
+        }
+    ]
+
+    result = asyncio.run(db.record_vocabulary_review_result("vocab-2", shelved=True))
+
+    assert result.shelved is True
+    query, params = db._pool.connection.execute_calls[0]
+    assert "shelf = TRUE" in query
+    assert params == ("vocab-2",)
 
 
 def test_validate_readonly_query_accepts_safe_select():

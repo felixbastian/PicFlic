@@ -8,6 +8,7 @@ def test_load_config_reads_dotenv(tmp_path, monkeypatch):
     monkeypatch.delenv("DB_PASSWORD", raising=False)
     monkeypatch.delenv("DB_NAME", raising=False)
     monkeypatch.delenv("INSTANCE_CONNECTION_NAME", raising=False)
+    monkeypatch.delenv("PICTOAGENT_REVIEW_JOB_SECRET", raising=False)
     load_config.cache_clear()
 
     env_file = tmp_path / ".env"
@@ -19,6 +20,7 @@ def test_load_config_reads_dotenv(tmp_path, monkeypatch):
         "DB_PASSWORD=secret\n"
         "DB_NAME=app_db\n"
         "INSTANCE_CONNECTION_NAME=project:region:instance\n"
+        "PICTOAGENT_REVIEW_JOB_SECRET=job-secret\n"
     )
 
     config = load_config(env_file)
@@ -31,6 +33,7 @@ def test_load_config_reads_dotenv(tmp_path, monkeypatch):
     assert config.db_password == "secret"
     assert config.db_name == "app_db"
     assert config.instance_connection_name == "project:region:instance"
+    assert config.review_job_secret == "job-secret"
     assert config.postgres_enabled is True
 
 
@@ -42,6 +45,7 @@ def test_load_config_prefers_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PASSWORD", "env-password")
     monkeypatch.setenv("DB_NAME", "env-db")
     monkeypatch.setenv("INSTANCE_CONNECTION_NAME", "env-project:env-region:env-instance")
+    monkeypatch.setenv("PICTOAGENT_REVIEW_JOB_SECRET", "env-job-secret")
     load_config.cache_clear()
 
     env_file = tmp_path / ".env"
@@ -53,6 +57,7 @@ def test_load_config_prefers_environment(tmp_path, monkeypatch):
         "DB_PASSWORD=file-password\n"
         "DB_NAME=file-db\n"
         "INSTANCE_CONNECTION_NAME=file-project:file-region:file-instance\n"
+        "PICTOAGENT_REVIEW_JOB_SECRET=file-job-secret\n"
     )
 
     config = load_config(env_file)
@@ -64,3 +69,4 @@ def test_load_config_prefers_environment(tmp_path, monkeypatch):
     assert config.db_password == "env-password"
     assert config.db_name == "env-db"
     assert config.instance_connection_name == "env-project:env-region:env-instance"
+    assert config.review_job_secret == "env-job-secret"

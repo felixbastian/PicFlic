@@ -1,0 +1,5 @@
+ALTER TABLE fact_vocabulary
+    ADD COLUMN IF NOT EXISTS current_review_stage TEXT DEFAULT 'day',
+    ADD COLUMN IF NOT EXISTS next_review_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP + INTERVAL '1 day',
+    ADD COLUMN IF NOT EXISTS awaiting_review BOOLEAN DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS last_review_prompted_at TIMESTAMP;

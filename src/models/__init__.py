@@ -4,6 +4,7 @@ from .nutrition import NutritionAnalysis
 from .query import SQLQueryPlan, TextRoutingDecision, TextWorkflowType
 from .records import AnalysisPayload, ImageRecord
 from .routing import RoutingDecision
+from .vocabulary import DueVocabularyReview, VocabularyReviewResult, VocabularyReviewStage, VocabularyWorkflowResult
 
 __all__ = [
     "AnalysisPayload",
@@ -18,4 +19,8 @@ __all__ = [
     "TextRoutingDecision",
     "TextWorkflowType",
     "TrackingTaskType",
+    "DueVocabularyReview",
+    "VocabularyReviewResult",
+    "VocabularyReviewStage",
+    "VocabularyWorkflowResult",
 ]

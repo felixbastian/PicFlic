@@ -9,8 +9,14 @@ chmod +x cloud-sql-proxy
 psql -h 127.0.0.1 -p 5432 -U postgres -d postgres
 -> provide password used during cloud sql instance creation
 
+# Start the server
+./src/db/cloud-sql-proxy picflic-490614:europe-west1:picflic-database --port 5432
+
 # Run the migration scripts
 psql -h 127.0.0.1 -U postgres -d postgres -f src/db/migrations/001_init_db.sql
 psql -h 127.0.0.1 -U app_user -d app_db -f src/db/migrations/002_init_schema.sql
 psql -h 127.0.0.1 -U app_user -d app_db -f src/db/migrations/003_insert.sql
 psql -h 127.0.0.1 -U app_user -d app_db -f src/db/migrations/004_init_schema.sql
+psql -h 127.0.0.1 -U app_user -d app_db -f src/db/migrations/005_init_schema.sql
+psql -h 127.0.0.1 -U app_user -d app_db -f src/db/migrations/005_init_schema.sql
+psql -h 127.0.0.1 -U app_user -d app_db -f src/db/migrations/006_edit_schema.sql
