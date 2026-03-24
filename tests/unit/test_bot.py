@@ -3,6 +3,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from telegram.constants import ParseMode
 
 from src.bot import (
     dispatch_due_vocabulary_reviews,
@@ -10,15 +11,24 @@ from src.bot import (
     format_query_response,
     format_result_response,
     format_vocabulary_response,
+    get_latest_nutrition_result,
     get_recent_history,
     handle_message,
     persist_result,
+    remember_latest_nutrition_result,
     remember_text_turn,
     resolve_user_id,
     start,
 )
 from src.logging_context import clear_log_context, get_log_context
-from src.models import DueVocabularyReview, ExpenseAnalysis, NutritionAnalysis, RecipeAnalysis, VocabularyReviewResult
+from src.models import (
+    DueVocabularyReview,
+    ExpenseAnalysis,
+    NutritionAnalysis,
+    NutritionCorrectionResult,
+    RecipeAnalysis,
+    VocabularyReviewResult,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -45,9 +55,11 @@ class _FakeMessage:
         self.text = None
         self.caption = None
         self.replies: list[str] = []
+        self.reply_kwargs: list[dict] = []
 
-    async def reply_text(self, text: str) -> None:
+    async def reply_text(self, text: str, **kwargs) -> None:
         self.replies.append(text)
+        self.reply_kwargs.append(kwargs)
 
 
 class _FakeAgent:
@@ -58,10 +70,14 @@ class _FakeAgent:
     ) -> None:
         self.image_calls: list[dict] = []
         self.text_calls: list[dict] = []
+        self.updated_nutrition_records: list[dict] = []
         self.image_result = image_result or {
             "task_type": "nutrition",
             "record_id": "meal-123",
             "analysis": {
+                "ingredients": [
+                    {"name": "beer", "amount": "500 ml", "calories": 151.7},
+                ],
                 "category": "drink",
                 "calories": 151.7,
                 "macros": {"carbs": 12.0, "protein": 1.0, "fat": 0.0},
@@ -81,6 +97,9 @@ class _FakeAgent:
         self.text_calls.append({"text": text, "metadata": metadata, "log_context": get_log_context()})
         return self.text_result
 
+    def update_nutrition_record(self, record_id: str, analysis: NutritionAnalysis | dict) -> None:
+        self.updated_nutrition_records.append({"record_id": record_id, "analysis": analysis})
+
 
 class _FakePostgresDatabase:
     def __init__(self) -> None:
@@ -90,6 +109,7 @@ class _FakePostgresDatabase:
         self.dish_calls: list[dict] = []
         self.vocabulary_calls: list[dict] = []
         self.daily_calories_calls: list[str] = []
+        self.updated_consumption_calls: list[dict] = []
         self.query_calls: list[dict] = []
         self.mark_prompted_calls: list[str] = []
         self.record_review_calls: list[dict] = []
@@ -108,9 +128,17 @@ class _FakePostgresDatabase:
         self.user_calls.append(kwargs)
         return "user-123"
 
-    async def store_consumption(self, user_id: str, analysis: NutritionAnalysis) -> str:
-        self.consumption_calls.append({"user_id": user_id, "analysis": analysis})
-        return "meal-123"
+    async def store_consumption(
+        self,
+        user_id: str,
+        analysis: NutritionAnalysis,
+        meal_id: str | None = None,
+    ) -> str:
+        resolved_meal_id = meal_id or "meal-123"
+        self.consumption_calls.append(
+            {"user_id": user_id, "analysis": analysis, "meal_id": resolved_meal_id}
+        )
+        return resolved_meal_id
 
     async def store_expense(self, user_id: str, analysis: ExpenseAnalysis) -> str:
         self.expense_calls.append({"user_id": user_id, "analysis": analysis})
@@ -133,6 +161,11 @@ class _FakePostgresDatabase:
     async def get_daily_calories(self, user_id: str) -> int:
         self.daily_calories_calls.append(user_id)
         return 1800
+
+    async def update_consumption(self, meal_id: str, user_id: str, analysis: NutritionAnalysis | dict) -> None:
+        self.updated_consumption_calls.append(
+            {"meal_id": meal_id, "user_id": user_id, "analysis": analysis}
+        )
 
     async def execute_guarded_query(
         self, query: str, user_id: str, allowed_tables: tuple[str, ...]
@@ -266,8 +299,15 @@ def test_handle_message_stores_fact_consumption():
     assert analysis.tags == ["alcoholic"]
     assert postgres_db.daily_calories_calls == ["user-123"]
     assert message.replies == [
-        "Category: drink\nCalories: 151.7\nTags: alcoholic\nToday's total calories: 1800"
+        "<b>Ingredients</b>\n"
+        "- Beer : 500 ml (151.7 kcal)\n"
+        "\n"
+        "<b>Calories:</b> 151.7\n"
+        "<b>Tags:</b> alcoholic\n"
+        "\n"
+        "<b>Today total calories:</b> 1800"
     ]
+    assert message.reply_kwargs == [{"parse_mode": ParseMode.HTML}]
 
 
 def test_handle_message_stores_fact_expense():
@@ -403,7 +443,87 @@ def test_handle_message_passes_caption_as_user_prompt():
     assert agent.image_calls[0]["metadata"] == {
         "user_prompt": "This is a chicken salad with extra avocado"
     }
-    assert message.replies == ["Category: drink\nCalories: 151.7\nTags: alcoholic"]
+    assert message.replies == [
+        "<b>Ingredients</b>\n"
+        "- Beer : 500 ml (151.7 kcal)\n"
+        "\n"
+        "<b>Calories:</b> 151.7\n"
+        "<b>Tags:</b> alcoholic"
+    ]
+    assert message.reply_kwargs == [{"parse_mode": ParseMode.HTML}]
+
+
+def test_handle_message_applies_nutrition_correction_and_updates_existing_entry(monkeypatch):
+    corrected_analysis = NutritionAnalysis.model_validate(
+        {
+            "ingredients": [
+                {"name": "beer", "amount": "330 ml", "calories": 110.0},
+            ],
+            "category": "drink",
+            "calories": 110.0,
+            "macros": {"carbs": 9.0, "protein": 1.0, "fat": 0.0},
+            "tags": ["alcoholic"],
+            "alcohol_units": 1.0,
+        }
+    )
+    monkeypatch.setattr(
+        "src.bot.correct_nutrition_analysis",
+        lambda text, previous_analysis, metadata=None: NutritionCorrectionResult(
+            apply_correction=True,
+            analysis=corrected_analysis,
+        ),
+    )
+
+    agent = _FakeAgent()
+    postgres_db = _FakePostgresDatabase()
+    message = _FakeMessage()
+    message.photo = []
+    message.text = "It was actually a small beer, only 330 ml"
+    update = SimpleNamespace(
+        update_id=1016,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    context = SimpleNamespace(
+        application=SimpleNamespace(bot_data={}),
+        user_data={},
+    )
+    remember_latest_nutrition_result(
+        context,
+        {
+            "task_type": "nutrition",
+            "record_id": "meal-123",
+            "meal_id": "meal-123",
+            "analysis": agent.image_result["analysis"],
+        },
+    )
+
+    asyncio.run(handle_message(update, context, agent, postgres_db))
+
+    assert agent.text_calls == []
+    assert agent.updated_nutrition_records[0]["record_id"] == "meal-123"
+    assert postgres_db.updated_consumption_calls[0]["meal_id"] == "meal-123"
+    assert postgres_db.updated_consumption_calls[0]["user_id"] == "user-123"
+    latest_result = get_latest_nutrition_result(context)
+    assert latest_result is not None
+    assert latest_result["analysis"]["calories"] == 110.0
+    assert message.replies == [
+        "<b>Ingredients</b>\n"
+        "- Beer : 330 ml (110.0 kcal)\n"
+        "\n"
+        "<b>Calories:</b> 110.0\n"
+        "<b>Tags:</b> alcoholic\n"
+        "\n"
+        "Updated your previous nutrition entry\n"
+        "\n"
+        "<b>Today total calories:</b> 1800"
+    ]
+    assert message.reply_kwargs == [{"parse_mode": ParseMode.HTML}]
 
 
 def test_handle_message_runs_expense_text_query():
@@ -943,6 +1063,9 @@ def test_persist_result_creates_nutrition_entry_when_needed():
     result = {
         "task_type": "nutrition",
         "analysis": {
+            "ingredients": [
+                {"name": "beer", "amount": "500 ml", "calories": 151.7},
+            ],
             "category": "drink",
             "calories": 151.7,
             "macros": {"carbs": 12.0, "protein": 1.0, "fat": 0.0},
@@ -1028,6 +1151,9 @@ def test_persist_result_requires_effective_user():
                 {
                     "task_type": "nutrition",
                     "analysis": {
+                        "ingredients": [
+                            {"name": "beer", "amount": "500 ml", "calories": 151.7},
+                        ],
                         "category": "drink",
                         "calories": 151.7,
                         "macros": {"carbs": 12.0, "protein": 1.0, "fat": 0.0},
@@ -1083,6 +1209,65 @@ def test_format_result_response_formats_recipe():
         "Carb source: noodles\n"
         "Vegetarian: yes\n"
         "Frequency: monthly"
+    )
+
+
+def test_format_result_response_formats_nutrition_with_ingredients_first():
+    response = format_result_response(
+        {
+            "task_type": "nutrition",
+            "analysis": {
+                "ingredients": [
+                    {"name": "beer", "amount": "500 ml", "calories": 151.7},
+                ],
+                "category": "drink",
+                "calories": 151.7,
+                "macros": {"carbs": 12.0, "protein": 1.0, "fat": 0.0},
+                "tags": ["alcoholic"],
+                "alcohol_units": 1.5,
+            },
+        },
+        "Today's total calories: 1800",
+    )
+
+    assert response == (
+        "<b>Ingredients</b>\n"
+        "- Beer : 500 ml (151.7 kcal)\n"
+        "\n"
+        "<b>Calories:</b> 151.7\n"
+        "<b>Tags:</b> alcoholic\n"
+        "\n"
+        "<b>Today total calories:</b> 1800"
+    )
+
+
+def test_format_result_response_compacts_ingredient_name_and_amount():
+    response = format_result_response(
+        {
+            "task_type": "nutrition",
+            "analysis": {
+                "ingredients": [
+                    {
+                        "name": "cherry tomatoes extra",
+                        "amount": "about 25 g",
+                        "calories": 5.0,
+                    },
+                ],
+                "category": "food",
+                "calories": 5.0,
+                "macros": {"carbs": 1.0, "protein": 0.2, "fat": 0.0},
+                "tags": ["vegetable"],
+                "alcohol_units": 0.0,
+            },
+        },
+    )
+
+    assert response == (
+        "<b>Ingredients</b>\n"
+        "- Cherry tomatoes : ~25 g (5.0 kcal)\n"
+        "\n"
+        "<b>Calories:</b> 5.0\n"
+        "<b>Tags:</b> vegetable"
     )
 
 

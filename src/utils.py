@@ -11,10 +11,26 @@ from typing import Any, Dict, TypeVar
 from openai import OpenAI
 
 from .config import load_config
-from .models import EXPENSE_CATEGORIES, ExpenseAnalysis, NutritionAnalysis, RecipeAnalysis, RoutingDecision
+from .models import (
+    EXPENSE_CATEGORIES,
+    ExpenseAnalysis,
+    NutritionAnalysis,
+    NutritionCorrectionResult,
+    RecipeAnalysis,
+    RoutingDecision,
+)
+from .query_utils import _call_text_with_schema
 
-SchemaModel = TypeVar("SchemaModel", NutritionAnalysis, ExpenseAnalysis, RecipeAnalysis, RoutingDecision)
+SchemaModel = TypeVar(
+    "SchemaModel",
+    NutritionAnalysis,
+    NutritionCorrectionResult,
+    ExpenseAnalysis,
+    RecipeAnalysis,
+    RoutingDecision,
+)
 logger = logging.getLogger(__name__)
+_IMAGE_TEXT_METADATA_KEYS = ("user_prompt", "comment", "caption")
 
 
 def route_image_task(image_path: str, metadata: Dict[str, Any] | None = None) -> RoutingDecision:
@@ -36,10 +52,18 @@ def analyze_nutrition_image(image_path: str, metadata: Dict[str, Any] | None = N
     """Analyze an image with OpenAI and return a validated nutrition record."""
     prompt = (
         "You are a nutrition tracking assistant. "
-        "Estimate the pictured item's category, calories, macros, tags, and alcohol units. "
+        "First fill the ingredients field with the pictured food or drink broken into likely ingredients or components. "
+        "Each ingredient name must be short and use at most 2 words. "
+        "For each ingredient, estimate the amount using both the image and any user note in the metadata. "
+        "Keep each amount short and compact, for example 6 pieces, 120 g, 250 ml, or ~25 g. "
+        "Prefer counts when they are visually clear. Use ~ instead of words like about or approximately. "
+        "For each ingredient, estimate that ingredient's calories for the stated amount. "
+        "Then write the model-estimated summed total calories into the top-level calories field. "
+        "Estimate the pictured item's category, macros, tags, and alcohol units based on the same ingredient-level estimate. "
+        "Use the user note to disambiguate unclear ingredients, portion sizes, toppings, or hidden components. "
         "Return only the structured result. "
-        "If the image is unclear, make the best conservative estimate and use category='unknown' when needed."
-        "Additional text instructions could include the amount or the content of the picture."
+        "If the image is unclear, make the best conservative estimate and use category='unknown' when needed. "
+        "Tags should describe the overall meal or drink."
     )
     return _analyze_with_schema(image_path, metadata, prompt, NutritionAnalysis, "nutrition_analysis")
 
@@ -55,6 +79,40 @@ def analyze_expense_receipt(image_path: str, metadata: Dict[str, Any] | None = N
         "Use 'Sonstige' if nothing else fits. Return only the structured result."
     )
     return _analyze_with_schema(image_path, metadata, prompt, ExpenseAnalysis, "expense_analysis")
+
+
+def correct_nutrition_analysis(
+    correction_text: str,
+    previous_analysis: NutritionAnalysis | Dict[str, Any],
+    metadata: Dict[str, Any] | None = None,
+) -> NutritionCorrectionResult:
+    """Decide whether a text message corrects the last nutrition analysis and revise it if needed."""
+    previous = previous_analysis
+    if isinstance(previous_analysis, dict):
+        previous = NutritionAnalysis.model_validate(previous_analysis)
+
+    prompt = (
+        "You are a nutrition tracking assistant handling a follow-up message about the user's most recent food or "
+        "drink photo analysis. "
+        "Decide whether the new message is meant to correct or clarify the previous nutrition analysis. "
+        "Treat messages that change ingredients, amounts, portion sizes, preparation method, toppings, or drink size "
+        "as corrections. "
+        "Do not treat casual replies, unrelated questions, or new standalone requests as corrections. "
+        "If the message is a correction, return apply_correction=true and provide a fully revised nutrition analysis. "
+        "The revised analysis must include ingredients first, with each ingredient name limited to at most 2 words. "
+        "Each amount should stay compact, for example 6 pieces, 120 g, 250 ml, or ~25 g, and should use ~ instead "
+        "of words like about or approximately. "
+        "The revised analysis must include each ingredient's amount and calories, and the "
+        "top-level calories field must be the model-estimated total for the corrected analysis. "
+        "If the message is not a correction, return apply_correction=false and analysis=null. "
+        "Return only the structured result."
+    )
+    user_text = (
+        f"User correction message: {correction_text}\n"
+        f"Previous nutrition analysis: {json.dumps(previous.to_dict(), ensure_ascii=False)}\n"
+        f"Metadata: {json.dumps(metadata or {}, ensure_ascii=False)}"
+    )
+    return _call_text_with_schema(prompt, user_text, NutritionCorrectionResult, "nutrition_correction")
 
 
 def analyze_recipe_image(image_path: str, metadata: Dict[str, Any] | None = None) -> RecipeAnalysis:
@@ -93,11 +151,7 @@ def _analyze_with_schema(
 
     client = OpenAI(api_key=config.openai_api_key)
 
-    user_text = (
-        f"Image path: {image_path}\n"
-        f"Filename: {Path(image_path).name}\n"
-        f"Metadata: {json.dumps(metadata)}"
-    )
+    user_text = _build_image_user_text(image_path, metadata)
 
     content: list[dict[str, Any]] = [
         {"type": "input_text", "text": user_text},
@@ -166,3 +220,25 @@ def _guess_mime_type(image_path: Path) -> str:
     if suffix == ".webp":
         return "image/webp"
     return "application/octet-stream"
+
+
+def _build_image_user_text(image_path: str, metadata: Dict[str, Any]) -> str:
+    sanitized_metadata = dict(metadata)
+    user_note = _extract_image_user_note(sanitized_metadata)
+
+    lines = [
+        f"Image path: {image_path}",
+        f"Filename: {Path(image_path).name}",
+    ]
+    if user_note:
+        lines.append(f"User note: {user_note}")
+    lines.append(f"Metadata: {json.dumps(sanitized_metadata, ensure_ascii=False)}")
+    return "\n".join(lines)
+
+
+def _extract_image_user_note(metadata: Dict[str, Any]) -> str | None:
+    for key in _IMAGE_TEXT_METADATA_KEYS:
+        value = metadata.pop(key, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from html import escape
 import logging
 import os
 import tempfile
@@ -10,12 +11,14 @@ from string import Formatter
 from typing import Any, Mapping, Optional
 
 from telegram import Update
+from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from .agent import PictoAgent
 from .db import PostgresDatabase
 from .logging_context import bind_log_context, generate_process_id, get_log_context, reset_log_context
 from .models import ExpenseAnalysis, NutritionAnalysis, RecipeAnalysis
+from .utils import correct_nutrition_analysis
 from .vocabulary_review import (
     build_review_prompt,
     build_review_response,
@@ -32,6 +35,7 @@ _QUERY_TEMPLATE_FIELDS = {"result_value", "result_unit", "result_label", "period
 _RECIPE_ANALYSIS_FIELDS = set(RecipeAnalysis.model_fields)
 _RECENT_HISTORY_KEY = "_picflic_recent_messages"
 _RECENT_HISTORY_LIMIT = 3
+_LAST_NUTRITION_RESULT_KEY = "_picflic_last_nutrition_result"
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -93,7 +97,14 @@ async def handle_message(
                 if postgres_db is not None and update.effective_user is not None:
                     persistence_note = await persist_result(update, context, postgres_db, result)
                 response = format_result_response(result, persistence_note)
-                await update.message.reply_text(response)
+                if result["task_type"] == "nutrition":
+                    await update.message.reply_text(response, parse_mode=ParseMode.HTML)
+                else:
+                    await update.message.reply_text(response)
+                if result["task_type"] == "nutrition":
+                    remember_latest_nutrition_result(context, result)
+                else:
+                    clear_latest_nutrition_result(context)
                 logger.info("Successfully analyzed photo from %s", user)
             except Exception as e:
                 logger.error("Failed to analyze image from %s: %s", user, str(e))
@@ -142,8 +153,11 @@ async def handle_message(
                             "finished": review_result.finished,
                             "next_due_review_sent": next_review_sent,
                         },
-                    )
+                        )
                     return
+
+            if await try_apply_latest_nutrition_correction(update, context, agent, postgres_db, incoming_text):
+                return
 
             recent_history = get_recent_history(context)
             result = agent.process_text(
@@ -292,7 +306,12 @@ async def persist_result(
         await postgres_db.store_dish(user_id, RecipeAnalysis.model_validate(analysis))
         return "Recipe added to your collection."
 
-    await postgres_db.store_consumption(user_id, NutritionAnalysis.model_validate(analysis))
+    meal_id = await postgres_db.store_consumption(
+        user_id,
+        NutritionAnalysis.model_validate(analysis),
+        meal_id=result.get("record_id"),
+    )
+    result["meal_id"] = meal_id
     daily_calories = await postgres_db.get_daily_calories(user_id)
     return f"Today's total calories: {daily_calories}"
 
@@ -317,13 +336,32 @@ def format_result_response(result: dict, persistence_note: str | None = None) ->
     if task_type == "recipe":
         return format_recipe_response(analysis, persistence_note or "Recipe added to your collection.")
 
-    lines = [
-        f"Category: {analysis['category']}",
-        f"Calories: {analysis['calories']}",
-        f"Tags: {', '.join(analysis.get('tags', []))}",
-    ]
+    lines: list[str] = []
+    ingredients = analysis.get("ingredients", [])
+    if ingredients:
+        lines.append("<b>Ingredients</b>")
+        for ingredient in ingredients:
+            lines.append(
+                f"- {_format_ingredient_name(ingredient['name'])} : "
+                f"{_format_ingredient_amount(ingredient['amount'])} ({ingredient['calories']} kcal)"
+            )
+
+    if lines:
+        lines.append("")
+
+    lines.append(f"<b>Calories:</b> {analysis['calories']}")
+    lines.append(f"<b>Tags:</b> {escape(', '.join(str(tag) for tag in analysis.get('tags', [])))}")
     if persistence_note:
-        lines.append(persistence_note)
+        update_note, total_note = _split_nutrition_persistence_note(persistence_note)
+        if update_note:
+            lines.append("")
+            lines.append(update_note)
+        if total_note:
+            lines.append("")
+            lines.append(total_note)
+        elif not update_note:
+            lines.append("")
+            lines.append(persistence_note)
     return "\n".join(lines)
 
 
@@ -412,6 +450,41 @@ def _format_query_value(value: Any) -> str:
     return str(value)
 
 
+def _split_nutrition_persistence_note(persistence_note: str) -> tuple[str | None, str | None]:
+    normalized = persistence_note.strip()
+    if not normalized:
+        return None, None
+
+    marker = "Today's total calories:"
+    if marker in normalized:
+        prefix, _, total_value = normalized.partition(marker)
+        update_note = prefix.strip().rstrip(".")
+        total_note = f"<b>Today total calories:</b> {escape(total_value.strip())}"
+        return update_note or None, total_note
+
+    return normalized, None
+
+
+def _format_ingredient_name(name: Any) -> str:
+    normalized = " ".join(str(name).strip().split())
+    if not normalized:
+        return ""
+    parts = normalized.split()
+    shortened = " ".join(parts[:2])
+    pretty = shortened[:1].upper() + shortened[1:]
+    return escape(pretty)
+
+
+def _format_ingredient_amount(amount: Any) -> str:
+    normalized = " ".join(str(amount).strip().split())
+    lowered = normalized.lower()
+    for prefix in ("about ", "approximately ", "approx. ", "approx "):
+        if lowered.startswith(prefix):
+            normalized = f"~{normalized[len(prefix):].strip()}"
+            break
+    return escape(normalized)
+
+
 def get_recent_history(context: ContextTypes.DEFAULT_TYPE) -> list[dict[str, str]]:
     """Return the recent text conversation history stored for the current Telegram user."""
     user_data = getattr(context, "user_data", None)
@@ -456,6 +529,105 @@ def remember_text_turn(
         if normalized_message:
             history.append({"role": "assistant", "text": normalized_message, "workflow": workflow_type})
     user_data[_RECENT_HISTORY_KEY] = history[-_RECENT_HISTORY_LIMIT:]
+
+
+def remember_latest_nutrition_result(context: ContextTypes.DEFAULT_TYPE, result: Mapping[str, Any]) -> None:
+    """Store the latest nutrition photo result so a follow-up text can correct it."""
+    user_data = getattr(context, "user_data", None)
+    if not isinstance(user_data, dict):
+        return
+
+    analysis = result.get("analysis")
+    if not isinstance(analysis, dict):
+        return
+
+    payload = {
+        "record_id": str(result.get("record_id") or "").strip(),
+        "meal_id": str(result.get("meal_id") or "").strip(),
+        "analysis": analysis,
+    }
+    user_data[_LAST_NUTRITION_RESULT_KEY] = payload
+
+
+def get_latest_nutrition_result(context: ContextTypes.DEFAULT_TYPE) -> dict[str, Any] | None:
+    """Return the last nutrition photo result stored for follow-up corrections."""
+    user_data = getattr(context, "user_data", None)
+    if not isinstance(user_data, dict):
+        return None
+
+    payload = user_data.get(_LAST_NUTRITION_RESULT_KEY)
+    if not isinstance(payload, dict):
+        return None
+    if not isinstance(payload.get("analysis"), dict):
+        return None
+    return payload
+
+
+def clear_latest_nutrition_result(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Remove any pending nutrition correction context."""
+    user_data = getattr(context, "user_data", None)
+    if not isinstance(user_data, dict):
+        return
+    user_data.pop(_LAST_NUTRITION_RESULT_KEY, None)
+
+
+async def try_apply_latest_nutrition_correction(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    agent: PictoAgent,
+    postgres_db: Optional[PostgresDatabase],
+    incoming_text: str,
+) -> bool:
+    """Apply a follow-up nutrition correction when the text clearly revises the last photo analysis."""
+    latest_result = get_latest_nutrition_result(context)
+    if latest_result is None:
+        return False
+
+    correction = correct_nutrition_analysis(
+        incoming_text,
+        latest_result["analysis"],
+        metadata={"recent_history": get_recent_history(context)},
+    )
+    if not correction.apply_correction or correction.analysis is None:
+        return False
+
+    record_id = str(latest_result.get("record_id") or "").strip()
+    if record_id:
+        agent.update_nutrition_record(record_id, correction.analysis)
+
+    persistence_note = "Updated your previous nutrition entry."
+    meal_id = str(latest_result.get("meal_id") or "").strip()
+    if postgres_db is not None and meal_id:
+        user_id = await resolve_user_id(update, context, postgres_db)
+        bind_log_context(workflow="nutrition")
+        await postgres_db.update_consumption(meal_id, user_id, correction.analysis)
+        daily_calories = await postgres_db.get_daily_calories(user_id)
+        persistence_note = f"Updated your previous nutrition entry. Today's total calories: {daily_calories}"
+
+    corrected_result = {
+        "task_type": "nutrition",
+        "record_id": record_id,
+        "meal_id": meal_id,
+        "analysis": correction.analysis.to_dict(),
+    }
+    remember_latest_nutrition_result(context, corrected_result)
+    response = format_result_response(corrected_result, persistence_note)
+    await update.message.reply_text(response, parse_mode=ParseMode.HTML)
+    remember_text_turn(
+        context,
+        incoming_text,
+        [response],
+        workflow_type="nutrition_correction",
+    )
+    logger.info(
+        "Applied nutrition correction from follow-up text",
+        extra={
+            "event": "nutrition_correction_applied",
+            "record_id": record_id,
+            "meal_id": meal_id,
+        },
+    )
+    return True
 
 
 async def dispatch_due_vocabulary_reviews(

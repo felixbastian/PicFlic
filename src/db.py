@@ -293,7 +293,12 @@ class PostgresDatabase:
                 logger.error("Failed to create user: %s", e, extra={"event": "warehouse_user_create_failed"})
                 raise
 
-    async def store_consumption(self, user_id: str, analysis: ImageRecord | dict | "NutritionAnalysis") -> str:
+    async def store_consumption(
+        self,
+        user_id: str,
+        analysis: ImageRecord | dict | "NutritionAnalysis",
+        meal_id: str | None = None,
+    ) -> str:
         """Persist a nutrition analysis to fact_consumption for a user."""
         if not self._pool:
             raise RuntimeError("Database not connected. Call connect() first.")
@@ -305,10 +310,10 @@ class PostgresDatabase:
             meal_id = analysis.id
         elif isinstance(analysis, dict):
             normalized = NutritionAnalysis.model_validate(analysis)
-            meal_id = str(uuid.uuid4())
+            meal_id = meal_id or str(uuid.uuid4())
         else:
             normalized = analysis
-            meal_id = str(uuid.uuid4())
+            meal_id = meal_id or str(uuid.uuid4())
 
         async with self._pool.acquire() as conn:
             try:
@@ -335,6 +340,45 @@ class PostgresDatabase:
                 return meal_id
             except Exception as e:
                 logger.error("Failed to store consumption for user %s: %s", user_id, e)
+                raise
+
+    async def update_consumption(
+        self,
+        meal_id: str,
+        user_id: str,
+        analysis: "NutritionAnalysis" | dict,
+    ) -> None:
+        """Update an existing nutrition analysis row in fact_consumption."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        from .models import NutritionAnalysis
+
+        normalized = analysis
+        if isinstance(analysis, dict):
+            normalized = NutritionAnalysis.model_validate(analysis)
+
+        async with self._pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    """
+                    UPDATE fact_consumption
+                    SET category = $3,
+                        calories = $4,
+                        tags = $5,
+                        alcohol_units = $6
+                    WHERE meal_id = $1 AND user_id = $2
+                    """,
+                    meal_id,
+                    user_id,
+                    normalized.category,
+                    int(round(normalized.calories)),
+                    normalized.tags,
+                    normalized.alcohol_units,
+                )
+                logger.info("Updated fact_consumption row %s for user %s", meal_id, user_id)
+            except Exception as e:
+                logger.error("Failed to update consumption %s for user %s: %s", meal_id, user_id, e)
                 raise
 
     async def get_daily_calories(self, user_id: str) -> int:

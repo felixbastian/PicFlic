@@ -69,6 +69,10 @@ def test_store_consumption_inserts_fact_row():
     db = PostgresDatabase()
     db._pool = _FakePool()
     analysis = NutritionAnalysis(
+        ingredients=[
+            {"name": "pizza dough", "amount": "180 g", "calories": 320.0},
+            {"name": "cheese", "amount": "80 g", "calories": 192.4},
+        ],
         category="food",
         calories=512.4,
         macros=MacroBreakdown(carbs=40.0, protein=22.0, fat=19.0),
@@ -105,6 +109,29 @@ def test_get_daily_calories_sums_today_for_user():
     assert "SUM(calories)" in query
     assert "CURRENT_DATE" in query
     assert params == ("user-123",)
+
+
+def test_update_consumption_updates_fact_row():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+    analysis = NutritionAnalysis(
+        ingredients=[
+            {"name": "beer", "amount": "330 ml", "calories": 110.0},
+        ],
+        category="drink",
+        calories=110.0,
+        macros=MacroBreakdown(carbs=9.0, protein=1.0, fat=0.0),
+        tags=["alcoholic"],
+        alcohol_units=1.0,
+    )
+
+    asyncio.run(db.update_consumption("meal-123", "user-123", analysis))
+
+    calls = db._pool.connection.execute_calls
+    assert len(calls) == 1
+    query, params = calls[0]
+    assert "UPDATE fact_consumption" in query
+    assert params == ("meal-123", "user-123", "drink", 110, ["alcoholic"], 1.0)
 
 
 def test_store_expense_inserts_fact_row():
