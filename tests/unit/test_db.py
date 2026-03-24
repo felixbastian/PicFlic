@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 from datetime import datetime
 
 import pytest
@@ -185,10 +186,12 @@ def test_store_dish_inserts_fact_row():
 def test_list_due_vocabulary_reviews_returns_due_rows():
     db = PostgresDatabase()
     db._pool = _FakePool()
+    vocabulary_id = uuid.uuid4()
+    user_id = uuid.uuid4()
     db._pool.connection.fetch_result = [
         {
-            "vocabulary_id": "vocab-1",
-            "user_id": "user-123",
+            "vocabulary_id": vocabulary_id,
+            "user_id": user_id,
             "telegram_user_id": 42,
             "french_word": "bonjour",
             "english_description": "hello; a common French greeting.",
@@ -200,8 +203,34 @@ def test_list_due_vocabulary_reviews_returns_due_rows():
     rows = asyncio.run(db.list_due_vocabulary_reviews())
 
     assert len(rows) == 1
-    assert rows[0].vocabulary_id == "vocab-1"
+    assert rows[0].vocabulary_id == str(vocabulary_id)
+    assert rows[0].user_id == str(user_id)
     assert rows[0].telegram_user_id == 42
+
+
+def test_get_pending_vocabulary_review_normalizes_uuid_rows():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+    vocabulary_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    db._pool.connection.fetchrow_results = [
+        {
+            "vocabulary_id": vocabulary_id,
+            "user_id": user_id,
+            "telegram_user_id": 42,
+            "french_word": "bonjour",
+            "english_description": "hello; a common French greeting.",
+            "current_review_stage": "day",
+            "next_review_at": datetime(2026, 3, 23, 10, 0, 0),
+        }
+    ]
+
+    row = asyncio.run(db.get_pending_vocabulary_review(42))
+
+    assert row is not None
+    assert row.vocabulary_id == str(vocabulary_id)
+    assert row.user_id == str(user_id)
+    assert row.telegram_user_id == 42
 
 
 def test_record_vocabulary_review_result_advances_stage_on_correct_answer():
