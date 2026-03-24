@@ -15,7 +15,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 from .agent import PictoAgent
 from .db import PostgresDatabase
 from .logging_context import bind_log_context, generate_process_id, get_log_context, reset_log_context
-from .models import ExpenseAnalysis, NutritionAnalysis
+from .models import ExpenseAnalysis, NutritionAnalysis, RecipeAnalysis
 from .vocabulary_review import (
     build_review_prompt,
     build_review_response,
@@ -29,6 +29,7 @@ _QUERY_ALLOWED_TABLES = {
     "nutrition_query": ("fact_consumption",),
 }
 _QUERY_TEMPLATE_FIELDS = {"result_value", "result_unit", "result_label", "period_label"}
+_RECIPE_ANALYSIS_FIELDS = set(RecipeAnalysis.model_fields)
 _RECENT_HISTORY_KEY = "_picflic_recent_messages"
 _RECENT_HISTORY_LIMIT = 3
 
@@ -36,7 +37,7 @@ _RECENT_HISTORY_LIMIT = 3
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
     await update.message.reply_text(
-        "Hi! Send me a photo of your food or a receipt, ask about your tracked expenses and nutrition, or send me a French word to practice vocabulary."
+        "Hi! Send me a photo of your food or a receipt, ask about your tracked expenses and nutrition, send me a French word to practice vocabulary, or tell me to save a recipe to your collection."
     )
 
 
@@ -168,6 +169,27 @@ async def handle_message(
                     )
                 await update.message.reply_text(response)
                 remember_text_turn(context, incoming_text, [response], workflow_type="vocabulary")
+            elif result["workflow_type"] == "recipe_collection":
+                if postgres_db is None:
+                    await update.message.reply_text("Recipe collection storage is not available right now.")
+                    remember_text_turn(
+                        context,
+                        incoming_text,
+                        ["Recipe collection storage is not available right now."],
+                        workflow_type="recipe_collection",
+                    )
+                    return
+
+                user_id = await resolve_user_id(update, context, postgres_db)
+                await postgres_db.store_dish(
+                    user_id,
+                    RecipeAnalysis.model_validate(
+                        {field_name: result.get(field_name) for field_name in _RECIPE_ANALYSIS_FIELDS}
+                    ),
+                )
+                response = format_recipe_response(result, "Recipe added to your collection.")
+                await update.message.reply_text(response)
+                remember_text_turn(context, incoming_text, [response], workflow_type="recipe_collection")
             else:
                 if postgres_db is None:
                     await update.message.reply_text("Database-backed questions are not available right now.")
@@ -253,6 +275,10 @@ async def persist_result(
         await postgres_db.store_expense(user_id, ExpenseAnalysis.model_validate(analysis))
         return "Expense added to the database."
 
+    if task_type == "recipe":
+        await postgres_db.store_dish(user_id, RecipeAnalysis.model_validate(analysis))
+        return "Recipe added to your collection."
+
     await postgres_db.store_consumption(user_id, NutritionAnalysis.model_validate(analysis))
     daily_calories = await postgres_db.get_daily_calories(user_id)
     return f"Today's total calories: {daily_calories}"
@@ -275,6 +301,9 @@ def format_result_response(result: dict, persistence_note: str | None = None) ->
         )
         return "\n".join(lines)
 
+    if task_type == "recipe":
+        return format_recipe_response(analysis, persistence_note or "Recipe added to your collection.")
+
     lines = [
         f"Category: {analysis['category']}",
         f"Calories: {analysis['calories']}",
@@ -282,6 +311,24 @@ def format_result_response(result: dict, persistence_note: str | None = None) ->
     ]
     if persistence_note:
         lines.append(persistence_note)
+    return "\n".join(lines)
+
+
+def format_recipe_response(result: Mapping[str, Any], persistence_note: str | None = None) -> str:
+    """Format a recipe collection result for Telegram."""
+    lines: list[str] = []
+    if persistence_note:
+        lines.append(persistence_note)
+    lines.append(f"Name: {result['name']}")
+    lines.append(f"Description: {result['description']}")
+    if result.get("carb_source"):
+        lines.append(f"Carb source: {result['carb_source']}")
+    if result.get("vegetarian") is not None:
+        lines.append(f"Vegetarian: {'yes' if result['vegetarian'] else 'no'}")
+    if result.get("meat"):
+        lines.append(f"Meat: {result['meat']}")
+    if result.get("frequency_rotation"):
+        lines.append(f"Frequency: {result['frequency_rotation']}")
     return "\n".join(lines)
 
 

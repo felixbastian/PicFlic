@@ -4,7 +4,7 @@ from datetime import datetime
 import pytest
 
 from src.db import PostgresDatabase, validate_readonly_query
-from src.models import ExpenseAnalysis, MacroBreakdown, NutritionAnalysis
+from src.models import ExpenseAnalysis, MacroBreakdown, NutritionAnalysis, RecipeAnalysis
 
 
 class _FakeConnection:
@@ -150,6 +150,36 @@ def test_store_vocabulary_inserts_fact_row():
     assert params[1] == "user-123"
     assert params[2] == "bonjour"
     assert params[3] == "hello; a common French greeting used when meeting someone."
+
+
+def test_store_dish_inserts_fact_row():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+    analysis = RecipeAnalysis(
+        name="Lemon pasta",
+        description="Pasta with lemon, butter, and parmesan.",
+        carb_source="noodles",
+        vegetarian=True,
+        meat=None,
+        frequency_rotation="monthly",
+    )
+
+    dish_id = asyncio.run(db.store_dish("user-123", analysis))
+
+    assert dish_id
+    calls = db._pool.connection.execute_calls
+    assert len(calls) == 1
+    query, params = calls[0]
+    assert "INSERT INTO fact_dishes" in query
+    assert params[0] == dish_id
+    assert params[1] == "user-123"
+    assert params[2] is None
+    assert params[3] == "Lemon pasta"
+    assert params[4] == "Pasta with lemon, butter, and parmesan."
+    assert params[5] == "noodles"
+    assert params[6] is True
+    assert params[7] is None
+    assert params[8] == "monthly"
 
 
 def test_list_due_vocabulary_reviews_returns_due_rows():

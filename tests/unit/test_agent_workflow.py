@@ -126,3 +126,17 @@ def test_vocabulary_followup_uses_recent_history_without_storing_again_end_to_en
     assert second_result["store_vocabulary"] is False
     assert second_result["french_word"] is None
     assert second_result["english_description"] is None
+
+
+def test_recipe_text_uses_recipe_collection_workflow_end_to_end(tmp_path):
+    _require_openai_api_key()
+    agent = PictoAgent(SqliteDatabase(tmp_path / "workflow.db"))
+
+    result = agent.process_text(
+        "Add this to the recipes: lemon pasta with butter, parmesan, and black pepper. "
+        "We should make it monthly."
+    )
+
+    assert result["workflow_type"] == "recipe_collection"
+    assert result["name"].strip()
+    assert result["description"].strip()

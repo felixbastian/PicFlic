@@ -64,3 +64,15 @@ gcloud iam service-accounts add-iam-policy-binding \
 
 curl -X POST https://api.telegram.org/bot8600025848:AAHbOpEWZGLY3Gg3WieG28nz8K12OHV6IHU/setWebhook \
   -d url=https://picflic-cloud-run-642164961505.europe-west1.run.app/webhook/telegram
+
+
+### Cloud Scheduler for vocab
+
+gcloud services enable cloudscheduler.googleapis.com --project picflic-490614
+gcloud scheduler jobs create http picflic-vocabulary-reviews \
+  --location=europe-west1 \
+  --schedule="0 * * * *" \
+  --time-zone="Europe/Berlin" \
+  --uri="https://picflic-cloud-run-642164961505.europe-west1.run.app/jobs/vocabulary-reviews/run" \
+  --http-method=POST \
+  --headers="X-Job-Secret=cf1e7d33467b6bb6cd616c08a3f2d39cf751a45472717fc239fd3c127881b263"

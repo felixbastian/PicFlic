@@ -11,17 +11,21 @@ from typing import Any, Dict, TypeVar
 from openai import OpenAI
 
 from .config import load_config
-from .models import EXPENSE_CATEGORIES, ExpenseAnalysis, NutritionAnalysis, RoutingDecision
+from .models import EXPENSE_CATEGORIES, ExpenseAnalysis, NutritionAnalysis, RecipeAnalysis, RoutingDecision
 
-SchemaModel = TypeVar("SchemaModel", NutritionAnalysis, ExpenseAnalysis, RoutingDecision)
+SchemaModel = TypeVar("SchemaModel", NutritionAnalysis, ExpenseAnalysis, RecipeAnalysis, RoutingDecision)
 logger = logging.getLogger(__name__)
 
 
 def route_image_task(image_path: str, metadata: Dict[str, Any] | None = None) -> RoutingDecision:
-    """Decide whether an image should be handled as nutrition or expense tracking."""
+    """Decide whether an image should be handled as nutrition, expense, or recipe tracking."""
     prompt = (
         "You are an orchestrator for a personal tracking assistant. "
         "Choose task_type='expense' when the image is a receipt, bill, invoice, or proof of purchase. "
+        "Choose task_type='recipe' when the image is a screenshot, recipe card, dish description, meal plan, "
+        "or a dish idea that the user wants to save to their recipe collection. "
+        "Metadata may explicitly say things like 'add this to the recipes' or 'add this to the collection'; "
+        "that should strongly favor task_type='recipe'. "
         "Choose task_type='nutrition' when the image is food, a drink, a meal, or something to estimate calories for. "
         "Return only the structured result."
     )
@@ -51,6 +55,19 @@ def analyze_expense_receipt(image_path: str, metadata: Dict[str, Any] | None = N
         "Use 'Sonstige' if nothing else fits. Return only the structured result."
     )
     return _analyze_with_schema(image_path, metadata, prompt, ExpenseAnalysis, "expense_analysis")
+
+
+def analyze_recipe_image(image_path: str, metadata: Dict[str, Any] | None = None) -> RecipeAnalysis:
+    """Analyze a recipe screenshot or dish card and extract a structured recipe entry."""
+    prompt = (
+        "You are a recipe collection assistant. "
+        "The user is sending a recipe screenshot, meal plan, dish card, or dish description to save. "
+        "Extract a short dish name, a concise description, carb_source, vegetarian, meat, and frequency_rotation. "
+        "Use null for unknown optional fields. "
+        "If vegetarian is true, meat must be null. "
+        "Return only the structured result."
+    )
+    return _analyze_with_schema(image_path, metadata, prompt, RecipeAnalysis, "recipe_analysis")
 
 
 def analyze_image(image_path: str, metadata: Dict[str, Any] | None = None) -> NutritionAnalysis:

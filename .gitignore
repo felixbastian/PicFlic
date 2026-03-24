@@ -7,3 +7,4 @@ src/*.pyc
 .pytest_cache/
 .venv/
 data/pictoagent-devbot.db
+logs/

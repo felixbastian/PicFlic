@@ -18,7 +18,7 @@ from src.bot import (
     start,
 )
 from src.logging_context import clear_log_context, get_log_context
-from src.models import DueVocabularyReview, ExpenseAnalysis, NutritionAnalysis, VocabularyReviewResult
+from src.models import DueVocabularyReview, ExpenseAnalysis, NutritionAnalysis, RecipeAnalysis, VocabularyReviewResult
 
 
 @pytest.fixture(autouse=True)
@@ -87,6 +87,7 @@ class _FakePostgresDatabase:
         self.user_calls: list[dict] = []
         self.consumption_calls: list[dict] = []
         self.expense_calls: list[dict] = []
+        self.dish_calls: list[dict] = []
         self.vocabulary_calls: list[dict] = []
         self.daily_calories_calls: list[str] = []
         self.query_calls: list[dict] = []
@@ -114,6 +115,10 @@ class _FakePostgresDatabase:
     async def store_expense(self, user_id: str, analysis: ExpenseAnalysis) -> str:
         self.expense_calls.append({"user_id": user_id, "analysis": analysis})
         return "expense-123"
+
+    async def store_dish(self, user_id: str, analysis: RecipeAnalysis) -> str:
+        self.dish_calls.append({"user_id": user_id, "analysis": analysis})
+        return "dish-123"
 
     async def store_vocabulary(self, user_id: str, french_word: str, english_description: str) -> str:
         self.vocabulary_calls.append(
@@ -212,7 +217,7 @@ def test_start_replies_with_welcome_message():
     asyncio.run(start(update, SimpleNamespace()))
 
     assert message.replies == [
-        "Hi! Send me a photo of your food or a receipt, ask about your tracked expenses and nutrition, or send me a French word to practice vocabulary."
+        "Hi! Send me a photo of your food or a receipt, ask about your tracked expenses and nutrition, send me a French word to practice vocabulary, or tell me to save a recipe to your collection."
     ]
 
 
@@ -296,6 +301,51 @@ def test_handle_message_stores_fact_expense():
         "Total: EUR 43.20\n"
         "Category: Lebensmitteleinkäufe\n"
         "Description: Groceries and toiletries"
+    ]
+
+
+def test_handle_message_stores_fact_dish():
+    message = _FakeMessage()
+    agent = _FakeAgent(
+        image_result={
+            "task_type": "recipe",
+            "record_id": "dish-123",
+            "analysis": {
+                "name": "Chicken rice bowl",
+                "description": "A simple chicken rice bowl with vegetables.",
+                "carb_source": "rice",
+                "vegetarian": False,
+                "meat": "chicken",
+                "frequency_rotation": "bi-weekly",
+            },
+        }
+    )
+    update = SimpleNamespace(
+        update_id=1011,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
+    postgres_db = _FakePostgresDatabase()
+
+    asyncio.run(handle_message(update, context, agent, postgres_db))
+
+    assert len(postgres_db.dish_calls) == 1
+    assert postgres_db.dish_calls[0]["user_id"] == "user-123"
+    assert postgres_db.dish_calls[0]["analysis"].name == "Chicken rice bowl"
+    assert message.replies == [
+        "Recipe added to your collection.\n"
+        "Name: Chicken rice bowl\n"
+        "Description: A simple chicken rice bowl with vegetables.\n"
+        "Carb source: rice\n"
+        "Vegetarian: no\n"
+        "Meat: chicken\n"
+        "Frequency: bi-weekly"
     ]
 
 
@@ -591,6 +641,50 @@ def test_handle_message_stores_new_vocabulary_entry():
     ]
 
 
+def test_handle_message_stores_recipe_collection_entry_from_text():
+    message = _FakeMessage()
+    message.photo = []
+    message.text = "Add this to the recipes: lemon pasta with parmesan"
+    agent = _FakeAgent(
+        text_result={
+            "workflow_type": "recipe_collection",
+            "text": "Add this to the recipes: lemon pasta with parmesan",
+            "metadata": {"recent_history": []},
+            "name": "Lemon pasta",
+            "description": "Pasta with lemon, butter, and parmesan.",
+            "carb_source": "noodles",
+            "vegetarian": True,
+            "meat": None,
+            "frequency_rotation": "monthly",
+        }
+    )
+    update = SimpleNamespace(
+        update_id=1020,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
+    postgres_db = _FakePostgresDatabase()
+
+    asyncio.run(handle_message(update, context, agent, postgres_db))
+
+    assert len(postgres_db.dish_calls) == 1
+    assert postgres_db.dish_calls[0]["analysis"].name == "Lemon pasta"
+    assert message.replies == [
+        "Recipe added to your collection.\n"
+        "Name: Lemon pasta\n"
+        "Description: Pasta with lemon, butter, and parmesan.\n"
+        "Carb source: noodles\n"
+        "Vegetarian: yes\n"
+        "Frequency: monthly"
+    ]
+
+
 def test_handle_message_answers_vocabulary_follow_up_without_storing_again():
     message = _FakeMessage()
     message.photo = []
@@ -829,6 +923,36 @@ def test_persist_result_creates_expense_entry():
     assert len(postgres_db.consumption_calls) == 0
 
 
+def test_persist_result_creates_recipe_entry():
+    postgres_db = _FakePostgresDatabase()
+    update = SimpleNamespace(
+        update_id=1021,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+    )
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
+    result = {
+        "task_type": "recipe",
+        "analysis": {
+            "name": "Lemon pasta",
+            "description": "Pasta with lemon, butter, and parmesan.",
+            "carb_source": "noodles",
+            "vegetarian": True,
+            "meat": None,
+            "frequency_rotation": "monthly",
+        },
+    }
+
+    note = asyncio.run(persist_result(update, context, postgres_db, result))
+
+    assert note == "Recipe added to your collection."
+    assert len(postgres_db.dish_calls) == 1
+
+
 def test_persist_result_requires_effective_user():
     with pytest.raises(ValueError, match="effective Telegram user"):
         asyncio.run(
@@ -868,6 +992,32 @@ def test_format_result_response_formats_expense():
         "Total: EUR 43.20\n"
         "Category: Lebensmitteleinkäufe\n"
         "Description: Groceries and toiletries"
+    )
+
+
+def test_format_result_response_formats_recipe():
+    response = format_result_response(
+        {
+            "task_type": "recipe",
+            "analysis": {
+                "name": "Lemon pasta",
+                "description": "Pasta with lemon, butter, and parmesan.",
+                "carb_source": "noodles",
+                "vegetarian": True,
+                "meat": None,
+                "frequency_rotation": "monthly",
+            },
+        },
+        "Recipe added to your collection.",
+    )
+
+    assert response == (
+        "Recipe added to your collection.\n"
+        "Name: Lemon pasta\n"
+        "Description: Pasta with lemon, butter, and parmesan.\n"
+        "Carb source: noodles\n"
+        "Vegetarian: yes\n"
+        "Frequency: monthly"
     )
 
 

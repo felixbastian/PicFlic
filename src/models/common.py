@@ -14,4 +14,4 @@ class MacroBreakdown(BaseModel):
     protein: float = Field(ge=0, description="Estimated grams of protein.")
     fat: float = Field(ge=0, description="Estimated grams of fat.")
 
-TrackingTaskType = Literal["nutrition", "expense"]
+TrackingTaskType = Literal["nutrition", "expense", "recipe"]

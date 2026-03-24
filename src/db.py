@@ -11,7 +11,14 @@ from typing import Any, Iterable, Optional, Sequence
 import asyncpg
 
 from .config import AppConfig
-from .models import DueVocabularyReview, ExpenseAnalysis, ImageRecord, VocabularyReviewResult, VocabularyReviewStage
+from .models import (
+    DueVocabularyReview,
+    ExpenseAnalysis,
+    ImageRecord,
+    RecipeAnalysis,
+    VocabularyReviewResult,
+    VocabularyReviewStage,
+)
 from .mcp import DatabaseMCPAdapter
 
 logger = logging.getLogger(__name__)
@@ -409,6 +416,54 @@ class PostgresDatabase:
                 return vocabulary_id
             except Exception as e:
                 logger.error("Failed to store vocabulary for user %s: %s", user_id, e)
+                raise
+
+    async def store_dish(self, user_id: str, analysis: RecipeAnalysis | dict) -> str:
+        """Persist a recipe or dish idea to fact_dishes for a user."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        normalized = analysis
+        if isinstance(analysis, dict):
+            normalized = RecipeAnalysis.model_validate(analysis)
+
+        dish_id = str(uuid.uuid4())
+        async with self._pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO fact_dishes (
+                        dish_id,
+                        user_id,
+                        picture_link,
+                        name,
+                        description,
+                        carb_source,
+                        vegetarian,
+                        meat,
+                        frequency_rotation
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    """,
+                    dish_id,
+                    user_id,
+                    None,
+                    normalized.name,
+                    normalized.description,
+                    normalized.carb_source,
+                    normalized.vegetarian,
+                    normalized.meat,
+                    normalized.frequency_rotation,
+                )
+                logger.info(
+                    "Stored fact_dishes row %s for user %s",
+                    dish_id,
+                    user_id,
+                    extra={"event": "dish_stored", "dish_id": dish_id, "dish_name": normalized.name},
+                )
+                return dish_id
+            except Exception as e:
+                logger.error("Failed to store dish for user %s: %s", user_id, e)
                 raise
 
     async def list_due_vocabulary_reviews(self, limit: int = 100) -> list[DueVocabularyReview]:

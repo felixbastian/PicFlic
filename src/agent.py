@@ -9,14 +9,15 @@ from langgraph.graph import StateGraph
 from typing_extensions import NotRequired, TypedDict
 
 from .db import SqliteDatabase
-from .models import ExpenseAnalysis, ImageRecord, NutritionAnalysis, TrackingTaskType
+from .models import ExpenseAnalysis, ImageRecord, NutritionAnalysis, RecipeAnalysis, TrackingTaskType
 from .query_utils import (
     build_expense_query_plan,
     build_nutrition_query_plan,
+    build_recipe_collection_response,
     build_vocabulary_response,
     route_text_workflow,
 )
-from .utils import analyze_expense_receipt, analyze_nutrition_image, route_image_task
+from .utils import analyze_expense_receipt, analyze_nutrition_image, analyze_recipe_image, route_image_task
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,12 @@ class _TextState(TypedDict):
     store_vocabulary: NotRequired[bool]
     french_word: NotRequired[str | None]
     english_description: NotRequired[str | None]
+    name: NotRequired[str]
+    description: NotRequired[str]
+    carb_source: NotRequired[str | None]
+    vegetarian: NotRequired[bool | None]
+    meat: NotRequired[str | None]
+    frequency_rotation: NotRequired[str | None]
 
 
 class _PictoContext(TypedDict):
@@ -86,8 +93,21 @@ def _analyze_expense(state: _PictoState, runtime: Any) -> dict:
     return {"task_type": "expense", "analysis": analysis.to_dict()}
 
 
+def _analyze_recipe(state: _PictoState, runtime: Any) -> dict:
+    analysis = analyze_recipe_image(state["image_path"], state.get("metadata"))
+    logger.info(
+        "Completed recipe analysis node",
+        extra={"event": "agent_recipe_analysis", "analysis": analysis.to_dict()},
+    )
+    return {"task_type": "recipe", "analysis": analysis.to_dict()}
+
+
 def _next_step(state: _PictoState) -> str:
-    return "analyze_expense" if state["task_type"] == "expense" else "analyze_nutrition"
+    if state["task_type"] == "expense":
+        return "analyze_expense"
+    if state["task_type"] == "recipe":
+        return "analyze_recipe"
+    return "analyze_nutrition"
 
 
 def _store(state: _PictoState, runtime: Any) -> dict:
@@ -95,6 +115,8 @@ def _store(state: _PictoState, runtime: Any) -> dict:
     task_type = state["task_type"]
     if task_type == "expense":
         analysis = ExpenseAnalysis.model_validate(state["analysis"])
+    elif task_type == "recipe":
+        analysis = RecipeAnalysis.model_validate(state["analysis"])
     else:
         analysis = NutritionAnalysis.model_validate(state["analysis"])
     record = ImageRecord.from_analysis(state["image_path"], task_type, analysis)
@@ -170,6 +192,22 @@ def _build_vocabulary_text_response(state: _TextState, runtime: Any) -> dict:
     return result.model_dump()
 
 
+def _build_recipe_collection_text_response(state: _TextState, runtime: Any) -> dict:
+    result = build_recipe_collection_response(state["text"], state.get("metadata"))
+    logger.info(
+        "Built recipe collection result",
+        extra={
+            "event": "agent_recipe_collection_result",
+            "recipe_name": result.name,
+            "carb_source": result.carb_source,
+            "vegetarian": result.vegetarian,
+            "meat": result.meat,
+            "frequency_rotation": result.frequency_rotation,
+        },
+    )
+    return result.model_dump()
+
+
 class PictoAgent:
     """An agent that routes photos and text to the correct specialized workflow."""
 
@@ -184,11 +222,13 @@ class PictoAgent:
         graph.add_node("route", _route)
         graph.add_node("analyze_nutrition", _analyze_nutrition)
         graph.add_node("analyze_expense", _analyze_expense)
+        graph.add_node("analyze_recipe", _analyze_recipe)
         graph.add_node("store", _store)
         graph.add_edge("load", "route")
         graph.add_conditional_edges("route", _next_step)
         graph.add_edge("analyze_nutrition", "store")
         graph.add_edge("analyze_expense", "store")
+        graph.add_edge("analyze_recipe", "store")
         graph.set_entry_point("load")
         graph.set_finish_point("store")
         return graph.compile()
@@ -200,6 +240,7 @@ class PictoAgent:
         graph.add_node("build_expense_text_query", _build_expense_text_query)
         graph.add_node("build_nutrition_text_query", _build_nutrition_text_query)
         graph.add_node("build_vocabulary_text_response", _build_vocabulary_text_response)
+        graph.add_node("build_recipe_collection_text_response", _build_recipe_collection_text_response)
         graph.add_node("echo_text", _echo_text)
         graph.add_edge("load_text", "route_text")
         graph.add_conditional_edges(
@@ -209,6 +250,7 @@ class PictoAgent:
                 "expense_query": "build_expense_text_query",
                 "nutrition_query": "build_nutrition_text_query",
                 "vocabulary": "build_vocabulary_text_response",
+                "recipe_collection": "build_recipe_collection_text_response",
                 "echo": "echo_text",
             },
         )
@@ -216,6 +258,7 @@ class PictoAgent:
         graph.set_finish_point("build_expense_text_query")
         graph.set_finish_point("build_nutrition_text_query")
         graph.set_finish_point("build_vocabulary_text_response")
+        graph.set_finish_point("build_recipe_collection_text_response")
         graph.set_finish_point("echo_text")
         return graph.compile()
 

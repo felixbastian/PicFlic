@@ -4,6 +4,8 @@ from src.models import (
     ExpenseAnalysis,
     MacroBreakdown,
     NutritionAnalysis,
+    RecipeAnalysis,
+    RecipeCollectionResult,
     RoutingDecision,
     SQLQueryPlan,
     TextRoutingDecision,
@@ -35,6 +37,17 @@ def _mock_expense_analysis(image_path: str, metadata: dict | None = None) -> Exp
         description="Groceries and toiletries",
         expense_total_amount_in_euros=43.20,
         category="Lebensmitteleinkäufe",
+    )
+
+
+def _mock_recipe_analysis(image_path: str, metadata: dict | None = None) -> RecipeAnalysis:
+    return RecipeAnalysis(
+        name="Chicken rice bowl",
+        description="A simple chicken rice bowl with vegetables.",
+        carb_source="rice",
+        vegetarian=False,
+        meat="chicken",
+        frequency_rotation="bi-weekly",
     )
 
 
@@ -98,6 +111,27 @@ def test_get_record_by_id(tmp_path, monkeypatch):
     assert record.id == record_id
     assert record.task_type == "nutrition"
     assert record.analysis.category == "food"
+
+
+def test_process_image_routes_to_recipe_and_stores_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent.route_image_task",
+        lambda image_path, metadata=None: RoutingDecision(task_type="recipe"),
+    )
+    monkeypatch.setattr("src.agent.analyze_recipe_image", _mock_recipe_analysis)
+    db = SqliteDatabase(tmp_path / "records.db")
+    agent = PictoAgent(db)
+
+    result = agent.process_image("recipe-card.png", metadata={"user_prompt": "add this to the recipes"})
+
+    assert result["task_type"] == "recipe"
+    assert result["analysis"]["name"] == "Chicken rice bowl"
+    assert result["analysis"]["carb_source"] == "rice"
+
+    records = agent.list_records()
+    assert len(records) == 1
+    assert records[0].task_type == "recipe"
+    assert records[0].analysis.name == "Chicken rice bowl"
 
 
 def test_process_text_routes_to_echo(tmp_path, monkeypatch):
@@ -195,3 +229,29 @@ def test_process_text_routes_to_vocabulary(tmp_path, monkeypatch):
     assert result["store_vocabulary"] is True
     assert result["french_word"] == "bonjour"
     assert "hello" in result["assistant_reply"].lower()
+
+
+def test_process_text_routes_to_recipe_collection(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent.route_text_workflow",
+        lambda text, metadata=None: TextRoutingDecision(workflow_type="recipe_collection"),
+    )
+    monkeypatch.setattr(
+        "src.agent.build_recipe_collection_response",
+        lambda text, metadata=None: RecipeCollectionResult(
+            workflow_type="recipe_collection",
+            name="Lemon pasta",
+            description="Pasta with lemon, butter, and parmesan.",
+            carb_source="noodles",
+            vegetarian=True,
+            meat=None,
+            frequency_rotation="monthly",
+        ),
+    )
+    agent = PictoAgent(SqliteDatabase(tmp_path / "records.db"))
+
+    result = agent.process_text("Add this to the recipes: lemon pasta with parmesan")
+
+    assert result["workflow_type"] == "recipe_collection"
+    assert result["name"] == "Lemon pasta"
+    assert result["vegetarian"] is True
