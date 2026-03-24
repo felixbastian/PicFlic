@@ -52,6 +52,16 @@ _REVIEW_STAGE_NEXT: dict[VocabularyReviewStage, VocabularyReviewStage | None] = 
 }
 
 
+def _normalize_due_vocabulary_review_row(row: Any) -> dict[str, Any]:
+    """Normalize asyncpg row values for DueVocabularyReview validation."""
+    normalized = dict(row)
+    for field_name in ("vocabulary_id", "user_id"):
+        field_value = normalized.get(field_name)
+        if isinstance(field_value, uuid.UUID):
+            normalized[field_name] = str(field_value)
+    return normalized
+
+
 def validate_readonly_query(query: str, allowed_tables: Sequence[str]) -> str:
     """Validate a generated SQL query against conservative read-only guardrails."""
     normalized = query.strip()
@@ -504,7 +514,10 @@ class PostgresDatabase:
                 """,
                 limit,
             )
-            due_reviews = [DueVocabularyReview.model_validate(dict(row)) for row in rows]
+            due_reviews = [
+                DueVocabularyReview.model_validate(_normalize_due_vocabulary_review_row(row))
+                for row in rows
+            ]
             logger.info(
                 "Loaded due vocabulary reviews",
                 extra={"event": "vocabulary_due_loaded", "due_review_count": len(due_reviews)},
@@ -560,7 +573,7 @@ class PostgresDatabase:
             )
             if row is None:
                 return None
-            return DueVocabularyReview.model_validate(dict(row))
+            return DueVocabularyReview.model_validate(_normalize_due_vocabulary_review_row(row))
 
     async def record_vocabulary_review_result(
         self,
