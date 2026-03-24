@@ -119,7 +119,19 @@ async def handle_message(
                         )
                     response = build_review_response(pending_review, review_result)
                     await update.message.reply_text(response)
-                    remember_text_turn(context, incoming_text, [response], workflow_type="vocabulary")
+                    next_review_sent = False
+                    if postgres_db is not None:
+                        next_review_sent = await dispatch_next_due_vocabulary_review_for_user(
+                            context.application,
+                            postgres_db,
+                            pending_review.user_id,
+                        )
+                    remember_text_turn(
+                        context,
+                        incoming_text,
+                        [response],
+                        workflow_type="vocabulary",
+                    )
                     logger.info(
                         "Handled vocabulary review answer",
                         extra={
@@ -128,6 +140,7 @@ async def handle_message(
                             "correct": review_result.correct,
                             "shelved": review_result.shelved,
                             "finished": review_result.finished,
+                            "next_due_review_sent": next_review_sent,
                         },
                     )
                     return
@@ -455,35 +468,63 @@ async def dispatch_due_vocabulary_reviews(
     sent_count = 0
 
     for review in due_reviews:
-        context_token = bind_log_context(
-            process_id=get_log_context().get("process_id") or generate_process_id("vocab-review"),
-            user_id=review.user_id,
-            telegram_user_id=review.telegram_user_id,
-            action="vocabulary_review_dispatch",
-            workflow="vocabulary_review",
-        )
-        try:
-            prompt = build_review_prompt(review)
-            await application.bot.send_message(chat_id=review.telegram_user_id, text=prompt)
-            await postgres_db.mark_vocabulary_review_prompted(review.vocabulary_id)
+        if await send_vocabulary_review_prompt(application, postgres_db, review):
             sent_count += 1
-            logger.info(
-                "Sent vocabulary review prompt",
-                extra={
-                    "event": "vocabulary_review_sent",
-                    "vocabulary_id": review.vocabulary_id,
-                    "current_review_stage": review.current_review_stage,
-                },
-            )
-        except Exception:
-            logger.exception(
-                "Failed to send vocabulary review prompt",
-                extra={"event": "vocabulary_review_send_failed", "vocabulary_id": review.vocabulary_id},
-            )
-        finally:
-            reset_log_context(context_token)
 
     return sent_count
+
+
+async def send_vocabulary_review_prompt(
+    application: Application,
+    postgres_db: PostgresDatabase,
+    review,
+) -> bool:
+    """Send a single vocabulary review prompt and mark it as awaiting an answer."""
+    context_token = bind_log_context(
+        process_id=get_log_context().get("process_id") or generate_process_id("vocab-review"),
+        user_id=review.user_id,
+        telegram_user_id=review.telegram_user_id,
+        action="vocabulary_review_dispatch",
+        workflow="vocabulary_review",
+    )
+    try:
+        prompt = build_review_prompt(review)
+        await application.bot.send_message(chat_id=review.telegram_user_id, text=prompt)
+        await postgres_db.mark_vocabulary_review_prompted(review.vocabulary_id)
+        logger.info(
+            "Sent vocabulary review prompt",
+            extra={
+                "event": "vocabulary_review_sent",
+                "vocabulary_id": review.vocabulary_id,
+                "current_review_stage": review.current_review_stage,
+            },
+        )
+        return True
+    except Exception:
+        logger.exception(
+            "Failed to send vocabulary review prompt",
+            extra={"event": "vocabulary_review_send_failed", "vocabulary_id": review.vocabulary_id},
+        )
+        return False
+    finally:
+        reset_log_context(context_token)
+
+
+async def dispatch_next_due_vocabulary_review_for_user(
+    application: Application,
+    postgres_db: PostgresDatabase,
+    user_id: str,
+) -> bool:
+    """Immediately send the next overdue vocabulary review for the same user, if one exists."""
+    review = await postgres_db.get_next_due_vocabulary_review_for_user(user_id)
+    if review is None:
+        logger.info(
+            "No follow-up vocabulary review due for user",
+            extra={"event": "vocabulary_review_none_due_for_user", "user_id": user_id},
+        )
+        return False
+    return await send_vocabulary_review_prompt(application, postgres_db, review)
+    
 
 
 def create_telegram_application(

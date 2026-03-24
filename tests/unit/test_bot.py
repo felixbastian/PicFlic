@@ -151,6 +151,12 @@ class _FakePostgresDatabase:
     async def get_pending_vocabulary_review(self, telegram_user_id: int) -> DueVocabularyReview | None:
         return self.pending_review
 
+    async def get_next_due_vocabulary_review_for_user(self, user_id: str) -> DueVocabularyReview | None:
+        for review in self.due_reviews:
+            if review.user_id == user_id:
+                return review
+        return None
+
     async def record_vocabulary_review_result(
         self,
         vocabulary_id: str,
@@ -754,7 +760,8 @@ def test_handle_message_treats_pending_review_answer_as_review_flow():
         ),
         message=message,
     )
-    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
+    context = SimpleNamespace(application=_FakeApplication(), user_data={})
+    context.application.bot_data = {}
     postgres_db = _FakePostgresDatabase()
     postgres_db.pending_review = DueVocabularyReview(
         vocabulary_id="vocab-1",
@@ -773,6 +780,7 @@ def test_handle_message_treats_pending_review_answer_as_review_flow():
         {"vocabulary_id": "vocab-1", "correct": True, "shelved": False}
     ]
     assert message.replies == ['Correct. The French word is "bonjour". I will ask you again in 3 days.']
+    assert context.application.bot.sent_messages == []
 
 
 def test_handle_message_shelves_pending_review():
@@ -790,7 +798,8 @@ def test_handle_message_shelves_pending_review():
         ),
         message=message,
     )
-    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
+    context = SimpleNamespace(application=_FakeApplication(), user_data={})
+    context.application.bot_data = {}
     postgres_db = _FakePostgresDatabase()
     postgres_db.pending_review = DueVocabularyReview(
         vocabulary_id="vocab-2",
@@ -808,6 +817,62 @@ def test_handle_message_shelves_pending_review():
         {"vocabulary_id": "vocab-2", "correct": False, "shelved": True}
     ]
     assert message.replies == ['Okay, I shelved "fromage". I will stop asking you this word.']
+    assert context.application.bot.sent_messages == []
+
+
+def test_handle_message_sends_next_due_review_immediately_after_answer():
+    message = _FakeMessage()
+    message.photo = []
+    message.text = "Bonjor"
+    agent = _FakeAgent(text_result={"workflow_type": "echo"})
+    update = SimpleNamespace(
+        update_id=1020,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    context = SimpleNamespace(application=_FakeApplication(), user_data={})
+    context.application.bot_data = {}
+    postgres_db = _FakePostgresDatabase()
+    postgres_db.pending_review = DueVocabularyReview(
+        vocabulary_id="vocab-1",
+        user_id="user-123",
+        telegram_user_id=42,
+        french_word="bonjour",
+        english_description="hello; a common French greeting.",
+        current_review_stage="day",
+        next_review_at="2026-03-23T10:00:00",
+    )
+    postgres_db.due_reviews = [
+        DueVocabularyReview(
+            vocabulary_id="vocab-2",
+            user_id="user-123",
+            telegram_user_id=42,
+            french_word="fromage",
+            english_description="cheese",
+            current_review_stage="week",
+            next_review_at="2026-03-23T10:05:00",
+        )
+    ]
+
+    asyncio.run(handle_message(update, context, agent, postgres_db))
+
+    assert message.replies == ['Correct. The French word is "bonjour". I will ask you again in 3 days.']
+    assert context.application.bot.sent_messages == [
+        {
+            "chat_id": 42,
+            "text": (
+                "Vocabulary review:\n"
+                "What is the French word for:\ncheese\n\n"
+                "Reply with the French word. Reply 'shelf' if you want me to stop reviewing this word."
+            ),
+        }
+    ]
+    assert postgres_db.mark_prompted_calls == ["vocab-2"]
 
 
 def test_handle_message_reports_query_unavailable_without_postgres():

@@ -524,6 +524,49 @@ class PostgresDatabase:
             )
             return due_reviews
 
+    async def get_next_due_vocabulary_review_for_user(self, user_id: str) -> DueVocabularyReview | None:
+        """Return the next due vocabulary review for a specific user, if any."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    v.vocabulary_id,
+                    v.user_id,
+                    u.telegram_user_id,
+                    v.french_word,
+                    v.english_description,
+                    v.current_review_stage,
+                    v.next_review_at
+                FROM fact_vocabulary v
+                JOIN dim_user u ON u.user_id = v.user_id
+                WHERE v.user_id = $1
+                  AND v.finished = FALSE
+                  AND v.shelf = FALSE
+                  AND v.awaiting_review = FALSE
+                  AND v.current_review_stage IS NOT NULL
+                  AND v.next_review_at IS NOT NULL
+                  AND v.next_review_at <= CURRENT_TIMESTAMP
+                  AND u.telegram_user_id IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM fact_vocabulary pending
+                      WHERE pending.user_id = v.user_id
+                        AND pending.awaiting_review = TRUE
+                        AND pending.finished = FALSE
+                        AND pending.shelf = FALSE
+                  )
+                ORDER BY v.next_review_at ASC, v.created_at ASC
+                LIMIT 1
+                """,
+                user_id,
+            )
+            if row is None:
+                return None
+            return DueVocabularyReview.model_validate(_normalize_due_vocabulary_review_row(row))
+
     async def mark_vocabulary_review_prompted(self, vocabulary_id: str) -> None:
         """Mark a vocabulary item as awaiting the user's answer."""
         if not self._pool:
