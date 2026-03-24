@@ -16,6 +16,7 @@ from src.models import (
 def _mock_nutrition_analysis(image_path: str, metadata: dict | None = None) -> NutritionAnalysis:
     if "beer" in image_path:
         return NutritionAnalysis(
+            ingredients=[{"name": "beer", "amount": "500 ml", "calories": 150.0}],
             category="drink",
             calories=150.0,
             macros=MacroBreakdown(carbs=12.0, protein=1.0, fat=0.0),
@@ -24,6 +25,12 @@ def _mock_nutrition_analysis(image_path: str, metadata: dict | None = None) -> N
         )
 
     return NutritionAnalysis(
+        ingredients=[
+            {"name": "bun", "amount": "1 bun", "calories": 180.0},
+            {"name": "beef patty", "amount": "1 patty", "calories": 280.0},
+            {"name": "cheese", "amount": "1 slice", "calories": 90.0},
+            {"name": "fries", "amount": "150 g", "calories": 300.0},
+        ],
         category="food",
         calories=850.0,
         macros=MacroBreakdown(carbs=80.0, protein=25.0, fat=45.0),
@@ -111,6 +118,35 @@ def test_get_record_by_id(tmp_path, monkeypatch):
     assert record.id == record_id
     assert record.task_type == "nutrition"
     assert record.analysis.category == "food"
+
+
+def test_update_nutrition_record_replaces_existing_analysis(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agent.route_image_task",
+        lambda image_path, metadata=None: RoutingDecision(task_type="nutrition"),
+    )
+    monkeypatch.setattr("src.agent.analyze_nutrition_image", _mock_nutrition_analysis)
+    db = SqliteDatabase(tmp_path / "records.db")
+    agent = PictoAgent(db)
+
+    first = agent.process_image("beer-pint.png")
+    updated = agent.update_nutrition_record(
+        first["record_id"],
+        {
+            "ingredients": [{"name": "beer", "amount": "330 ml", "calories": 110.0}],
+            "category": "drink",
+            "calories": 110.0,
+            "macros": {"carbs": 9.0, "protein": 1.0, "fat": 0.0},
+            "tags": ["alcoholic"],
+            "alcohol_units": 1.0,
+        },
+    )
+
+    assert updated.analysis.calories == 110.0
+    record = agent.get_record(first["record_id"])
+    assert record is not None
+    assert record.analysis.calories == 110.0
+    assert record.analysis.ingredients[0].amount == "330 ml"
 
 
 def test_process_image_routes_to_recipe_and_stores_record(tmp_path, monkeypatch):

@@ -283,3 +283,33 @@ class PictoAgent:
 
     def get_record(self, record_id: str) -> ImageRecord | None:
         return self._db.get_record(record_id)
+
+    def update_nutrition_record(
+        self,
+        record_id: str,
+        analysis: NutritionAnalysis | dict[str, Any],
+    ) -> ImageRecord:
+        """Update an existing local nutrition record with corrected analysis."""
+        record = self._db.get_record(record_id)
+        if record is None:
+            raise ValueError(f"Record {record_id} not found.")
+        if record.task_type != "nutrition":
+            raise ValueError(f"Record {record_id} is not a nutrition record.")
+
+        normalized = analysis
+        if isinstance(analysis, dict):
+            normalized = NutritionAnalysis.model_validate(analysis)
+
+        updated_record = ImageRecord(
+            id=record.id,
+            image_path=record.image_path,
+            task_type=record.task_type,
+            analysis=normalized,
+            created_at=record.created_at,
+        )
+        self._db.store_record(updated_record)
+        logger.info(
+            "Updated local nutrition record",
+            extra={"event": "agent_record_updated", "record_id": record_id, "task_type": "nutrition"},
+        )
+        return updated_record

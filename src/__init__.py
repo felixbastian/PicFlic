@@ -4,7 +4,15 @@ from .agent import PictoAgent
 from .config import AppConfig, load_config
 from .db import SqliteDatabase
 from .mcp import MCPAdapter, SqliteMCPAdapter
-from .models import ExpenseAnalysis, ImageRecord, MacroBreakdown, NutritionAnalysis, RoutingDecision
+from .models import (
+    ExpenseAnalysis,
+    ImageRecord,
+    IngredientEstimate,
+    MacroBreakdown,
+    NutritionAnalysis,
+    NutritionCorrectionResult,
+    RoutingDecision,
+)
 
 
 def create_default_agent() -> PictoAgent:
@@ -18,9 +26,11 @@ __all__ = [
     "AppConfig",
     "ExpenseAnalysis",
     "ImageRecord",
+    "IngredientEstimate",
     "MCPAdapter",
     "MacroBreakdown",
     "NutritionAnalysis",
+    "NutritionCorrectionResult",
     "PictoAgent",
     "RoutingDecision",
     "SqliteDatabase",
