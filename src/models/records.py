@@ -8,8 +8,9 @@ import uuid
 from .common import TrackingTaskType
 from .expense import ExpenseAnalysis
 from .nutrition import NutritionAnalysis
+from .recipe import RecipeAnalysis
 
-AnalysisPayload = NutritionAnalysis | ExpenseAnalysis
+AnalysisPayload = NutritionAnalysis | ExpenseAnalysis | RecipeAnalysis
 
 
 @dataclass
@@ -52,6 +53,8 @@ class ImageRecord:
         task_type = data.get("task_type", "nutrition")
         if task_type == "expense":
             analysis = ExpenseAnalysis.model_validate(analysis_data)
+        elif task_type == "recipe":
+            analysis = RecipeAnalysis.model_validate(analysis_data)
         else:
             analysis = NutritionAnalysis.model_validate(analysis_data)
         return cls(

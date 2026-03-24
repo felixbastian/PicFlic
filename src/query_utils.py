@@ -10,7 +10,13 @@ from typing import Any
 from openai import OpenAI
 
 from .config import load_config
-from .models import EXPENSE_CATEGORIES, SQLQueryPlan, TextRoutingDecision, VocabularyWorkflowResult
+from .models import (
+    EXPENSE_CATEGORIES,
+    RecipeCollectionResult,
+    SQLQueryPlan,
+    TextRoutingDecision,
+    VocabularyWorkflowResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +34,9 @@ def route_text_workflow(text: str, metadata: dict[str, Any] | None = None) -> Te
         "meaning, or when the user asks a follow-up question about vocabulary that was discussed in the recent "
         "conversation history. A standalone French word or short French phrase like 'bonjour' should be treated as "
         "a vocabulary request even if the user does not explicitly ask for a translation. "
+        "Choose workflow_type='recipe_collection' when the user wants to save a dish, recipe, meal idea, or cooking "
+        "instructions into their recipe collection, for example by saying 'add this to the recipes' or "
+        "'add this to the collection'. "
         "Choose workflow_type='echo' for casual conversation or anything that is not a database lookup request. "
         "Return only the structured result."
     )
@@ -123,6 +132,25 @@ def build_vocabulary_response(
     if result.store_vocabulary and (not result.french_word or not result.english_description):
         raise ValueError("Vocabulary workflow must return french_word and english_description when storing.")
     return result
+
+
+def build_recipe_collection_response(
+    text: str,
+    metadata: dict[str, Any] | None = None,
+) -> RecipeCollectionResult:
+    """Build a structured recipe collection entry from text."""
+    today = date.today().isoformat()
+    prompt = (
+        "You are a recipe collection assistant. "
+        f"Today's date is {today}. "
+        "The user wants to save a dish, recipe, or meal idea into their collection. "
+        "Extract a short dish name, a concise description, carb_source, vegetarian, meat, and frequency_rotation. "
+        "Use null for optional fields when not known. "
+        "If vegetarian is true, meat must be null. "
+        "Return only the structured result."
+    )
+    user_text = _build_text_user_text(text, metadata, today)
+    return _call_text_with_schema(prompt, user_text, RecipeCollectionResult, "recipe_collection_result")
 
 
 def _build_text_user_text(text: str, metadata: dict[str, Any] | None, today: str) -> str:
