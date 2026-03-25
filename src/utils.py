@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Any, Dict, TypeVar
 
 from openai import OpenAI
@@ -19,6 +20,7 @@ from .models import (
     RecipeAnalysis,
     RoutingDecision,
 )
+from .openai_schema import build_strict_openai_schema
 from .query_utils import _call_text_with_schema
 
 SchemaModel = TypeVar(
@@ -31,6 +33,39 @@ SchemaModel = TypeVar(
 )
 logger = logging.getLogger(__name__)
 _IMAGE_TEXT_METADATA_KEYS = ("user_prompt", "comment", "caption")
+_NUMBER_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+}
+_ITEM_COUNT_PATTERNS = (
+    re.compile(r"(?<!\w)(?P<count>\d+)\s*(?:x|×)\b", re.IGNORECASE),
+    re.compile(r"(?<!\w)(?:x|×)\s*(?P<count>\d+)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?P<count>\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+of\s+"
+        r"(?:those|these|them|that|this|it)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?P<count>\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+times\b",
+        re.IGNORECASE,
+    ),
+)
+_CORRECTION_ITEM_COUNT_PATTERNS = _ITEM_COUNT_PATTERNS + (
+    re.compile(
+        r"\b(?:just|only)\s+(?P<count>\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b",
+        re.IGNORECASE,
+    ),
+)
 
 
 def route_image_task(image_path: str, metadata: Dict[str, Any] | None = None) -> RoutingDecision:
@@ -50,6 +85,7 @@ def route_image_task(image_path: str, metadata: Dict[str, Any] | None = None) ->
 
 def analyze_nutrition_image(image_path: str, metadata: Dict[str, Any] | None = None) -> NutritionAnalysis:
     """Analyze an image with OpenAI and return a validated nutrition record."""
+    sanitized_metadata, item_count = _prepare_nutrition_metadata(metadata)
     prompt = (
         "You are a nutrition tracking assistant. "
         "First fill the ingredients field with the pictured food or drink broken into likely ingredients or components. "
@@ -59,13 +95,21 @@ def analyze_nutrition_image(image_path: str, metadata: Dict[str, Any] | None = N
         "Prefer counts when they are visually clear. Use ~ instead of words like about or approximately. "
         "For each ingredient, estimate that ingredient's calories for the stated amount. "
         "Then write the model-estimated summed total calories into the top-level calories field. "
+        "Always set item_count=1 unless the application explicitly provides a different multiplier. "
         "Estimate the pictured item's category, macros, tags, and alcohol units based on the same ingredient-level estimate. "
         "Use the user note to disambiguate unclear ingredients, portion sizes, toppings, or hidden components. "
         "Return only the structured result. "
         "If the image is unclear, make the best conservative estimate and use category='unknown' when needed. "
         "Tags should describe the overall meal or drink."
     )
-    return _analyze_with_schema(image_path, metadata, prompt, NutritionAnalysis, "nutrition_analysis")
+    analysis = _analyze_with_schema(
+        image_path,
+        sanitized_metadata,
+        prompt,
+        NutritionAnalysis,
+        "nutrition_analysis",
+    )
+    return _apply_item_count_to_nutrition_analysis(analysis, item_count)
 
 
 def analyze_expense_receipt(image_path: str, metadata: Dict[str, Any] | None = None) -> ExpenseAnalysis:
@@ -102,8 +146,12 @@ def correct_nutrition_analysis(
         "The revised analysis must include ingredients first, with each ingredient name limited to at most 2 words. "
         "Each amount should stay compact, for example 6 pieces, 120 g, 250 ml, or ~25 g, and should use ~ instead "
         "of words like about or approximately. "
-        "The revised analysis must include each ingredient's amount and calories, and the "
-        "top-level calories field must be the model-estimated total for the corrected analysis. "
+        "Keep the ingredients list and each ingredient's calories scoped to one item. "
+        "Keep the top-level calories, macros, and alcohol_units scoped to one item as well. "
+        "Use item_count to reflect how many copies of the same pictured item the entry represents. "
+        "Preserve the previous item_count when the correction only changes what one item was like, and revise "
+        "item_count only when the user's message explicitly changes the number of items. "
+        "Use item_count=1 when there is only one item. "
         "If the message is not a correction, return apply_correction=false and analysis=null. "
         "Return only the structured result."
     )
@@ -112,7 +160,12 @@ def correct_nutrition_analysis(
         f"Previous nutrition analysis: {json.dumps(previous.to_dict(), ensure_ascii=False)}\n"
         f"Metadata: {json.dumps(metadata or {}, ensure_ascii=False)}"
     )
-    return _call_text_with_schema(prompt, user_text, NutritionCorrectionResult, "nutrition_correction")
+    result = _call_text_with_schema(prompt, user_text, NutritionCorrectionResult, "nutrition_correction")
+    if not result.apply_correction or result.analysis is None:
+        return result
+
+    normalized = _normalize_corrected_nutrition_analysis(correction_text, previous, result.analysis)
+    return result.model_copy(update={"analysis": normalized})
 
 
 def analyze_recipe_image(image_path: str, metadata: Dict[str, Any] | None = None) -> RecipeAnalysis:
@@ -193,7 +246,7 @@ def _analyze_with_schema(
             "format": {
                 "type": "json_schema",
                 "name": response_name,
-                "schema": response_model.model_json_schema(),
+                "schema": build_strict_openai_schema(response_model),
                 "strict": True,
             }
         },
@@ -242,3 +295,152 @@ def _extract_image_user_note(metadata: Dict[str, Any]) -> str | None:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
+
+
+def _prepare_nutrition_metadata(metadata: Dict[str, Any] | None) -> tuple[Dict[str, Any], int]:
+    normalized = dict(metadata or {})
+    item_count = 1
+
+    for key in _IMAGE_TEXT_METADATA_KEYS:
+        value = normalized.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+
+        item_count, sanitized_note = _extract_item_count_from_caption(value)
+        if sanitized_note:
+            normalized[key] = sanitized_note
+        else:
+            normalized.pop(key, None)
+        break
+
+    return normalized, item_count
+
+
+def _extract_item_count_from_caption(caption: str) -> tuple[int, str | None]:
+    normalized_caption = caption.strip()
+    if not normalized_caption:
+        return 1, None
+
+    for pattern in _ITEM_COUNT_PATTERNS:
+        match = pattern.search(normalized_caption)
+        if match is None:
+            continue
+
+        raw_count = match.group("count").strip().lower()
+        item_count = int(raw_count) if raw_count.isdigit() else _NUMBER_WORDS.get(raw_count, 1)
+        if item_count <= 1:
+            break
+
+        sanitized_caption = f"{normalized_caption[:match.start()]} {normalized_caption[match.end():]}"
+        sanitized_caption = re.sub(r"\s+", " ", sanitized_caption)
+        sanitized_caption = re.sub(r"\s+([,.;:!?])", r"\1", sanitized_caption)
+        sanitized_caption = re.sub(r"(^|[\s])[,;:/-]+", " ", sanitized_caption)
+        sanitized_caption = sanitized_caption.strip(" ,;:/-")
+        return item_count, sanitized_caption or None
+
+    return 1, normalized_caption
+
+
+def _apply_item_count_to_nutrition_analysis(
+    analysis: NutritionAnalysis,
+    item_count: int,
+) -> NutritionAnalysis:
+    return _rescale_nutrition_analysis_totals(analysis, from_count=1, to_count=item_count)
+
+
+def _normalize_corrected_nutrition_analysis(
+    correction_text: str,
+    previous_analysis: NutritionAnalysis,
+    corrected_analysis: NutritionAnalysis,
+) -> NutritionAnalysis:
+    effective_count = _resolve_corrected_item_count(
+        correction_text,
+        previous_analysis,
+        corrected_analysis,
+    )
+    source_count = _infer_analysis_total_item_count(corrected_analysis, effective_count)
+    return _rescale_nutrition_analysis_totals(
+        corrected_analysis,
+        from_count=source_count,
+        to_count=effective_count,
+    )
+
+
+def _resolve_corrected_item_count(
+    correction_text: str,
+    previous_analysis: NutritionAnalysis,
+    corrected_analysis: NutritionAnalysis,
+) -> int:
+    explicit_count = _find_explicit_item_count(correction_text)
+    if explicit_count is not None:
+        return max(1, explicit_count)
+    if corrected_analysis.item_count > 1:
+        return corrected_analysis.item_count
+    if previous_analysis.item_count > 1:
+        return previous_analysis.item_count
+    return 1
+
+
+def _find_explicit_item_count(text: str) -> int | None:
+    normalized_text = text.strip()
+    if not normalized_text:
+        return None
+
+    for pattern in _CORRECTION_ITEM_COUNT_PATTERNS:
+        match = pattern.search(normalized_text)
+        if match is None:
+            continue
+        return _parse_count_token(match.group("count"))
+    return None
+
+
+def _parse_count_token(raw_count: str) -> int:
+    normalized = raw_count.strip().lower()
+    if normalized.isdigit():
+        return int(normalized)
+    return _NUMBER_WORDS.get(normalized, 1)
+
+
+def _infer_analysis_total_item_count(
+    analysis: NutritionAnalysis,
+    effective_count: int,
+) -> int:
+    ingredient_calories = sum(float(ingredient.calories) for ingredient in analysis.ingredients)
+    candidates = [1]
+    if analysis.item_count > 1:
+        candidates.append(int(analysis.item_count))
+    if effective_count > 1:
+        candidates.append(int(effective_count))
+
+    if ingredient_calories <= 0:
+        return max(candidates)
+
+    return min(
+        dict.fromkeys(candidates),
+        key=lambda candidate: abs(float(analysis.calories) - ingredient_calories * candidate),
+    )
+
+
+def _rescale_nutrition_analysis_totals(
+    analysis: NutritionAnalysis,
+    from_count: int,
+    to_count: int,
+) -> NutritionAnalysis:
+    normalized_from = max(1, int(from_count))
+    normalized_to = max(1, int(to_count))
+    scale = normalized_to / normalized_from
+
+    return analysis.model_copy(
+        update={
+            "calories": analysis.calories * scale,
+            "item_count": normalized_to,
+            "macros": analysis.macros.model_copy(
+                update={
+                    "carbs": analysis.macros.carbs * scale,
+                    "protein": analysis.macros.protein * scale,
+                    "fat": analysis.macros.fat * scale,
+                }
+            ),
+            "alcohol_units": analysis.alcohol_units * scale,
+        }
+    )

@@ -1271,6 +1271,34 @@ def test_format_result_response_compacts_ingredient_name_and_amount():
     )
 
 
+def test_format_result_response_includes_item_count_when_multiple_items():
+    response = format_result_response(
+        {
+            "task_type": "nutrition",
+            "analysis": {
+                "ingredients": [
+                    {"name": "croissant", "amount": "1 piece", "calories": 230.0},
+                ],
+                "category": "food",
+                "calories": 690.0,
+                "item_count": 3,
+                "macros": {"carbs": 78.0, "protein": 15.0, "fat": 36.0},
+                "tags": ["pastry"],
+                "alcohol_units": 0.0,
+            },
+        },
+    )
+
+    assert response == (
+        "<b>Ingredients</b>\n"
+        "- Croissant : 1 piece (230.0 kcal)\n"
+        "\n"
+        "<b>Amount:</b> 3\n"
+        "<b>Calories:</b> 3 * 230.0 = 690.0\n"
+        "<b>Tags:</b> pastry"
+    )
+
+
 def test_format_vocabulary_response_appends_persistence_note():
     response = format_vocabulary_response(
         "Bonjour means hello. It is a common greeting in French.",

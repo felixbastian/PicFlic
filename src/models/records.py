@@ -39,11 +39,15 @@ class ImageRecord:
         )
 
     def to_dict(self) -> Dict[str, object]:
+        analysis_payload = self.analysis.to_dict()
+        if self.task_type == "nutrition":
+            analysis_payload = dict(analysis_payload)
+            analysis_payload.pop("item_count", None)
         return {
             "id": self.id,
             "image_path": self.image_path,
             "task_type": self.task_type,
-            "analysis": self.analysis.to_dict(),
+            "analysis": analysis_payload,
             "created_at": self.created_at,
         }
 

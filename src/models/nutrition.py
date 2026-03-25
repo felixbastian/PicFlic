@@ -40,6 +40,14 @@ class NutritionAnalysis(BaseModel):
         ge=0,
         description="Estimated total calories for the pictured item. This should be the model's summed estimate."
     )
+    item_count: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "How many copies of the pictured item this entry represents. Use 1 by default unless the application "
+            "explicitly provides a larger multiplier."
+        ),
+    )
     macros: MacroBreakdown
     tags: list[str] = Field(description="Descriptive tags about the pictured item. Use an empty list when none apply.")
     alcohol_units: float = Field(
