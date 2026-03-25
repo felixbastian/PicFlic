@@ -5,3 +5,4 @@
 - Assume that all keys are there. No unnecessary logic to avoid running into errors
 - Encapsulate try and catch only when necessary at the highest level. Allow functions to fail and to escalade the error
 - Unit test mocks are fine but also create tests that test the actual functionnality (end-to-end )
+- Never change Telegram webhook configuration, call Telegram `setWebhook` or `deleteWebhook`, or otherwise retarget bot delivery unless the user explicitly asks for that change in the current turn.

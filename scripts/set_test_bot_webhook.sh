@@ -28,5 +28,10 @@ fi
 
 BASE_URL="${1%/}"
 
+if [[ "$BASE_URL" == "https://api.trycloudflare.com" ]]; then
+  echo "Refusing to set webhook to Cloudflare's API host. Pass the public tunnel URL instead."
+  exit 1
+fi
+
 curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
   -d "url=${BASE_URL}/webhook/telegram"
