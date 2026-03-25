@@ -2,6 +2,7 @@ from src.agent import PictoAgent
 from src.db import SqliteDatabase
 from src.models import (
     ExpenseAnalysis,
+    ImageRecord,
     MacroBreakdown,
     NutritionAnalysis,
     RecipeAnalysis,
@@ -168,6 +169,27 @@ def test_process_image_routes_to_recipe_and_stores_record(tmp_path, monkeypatch)
     assert len(records) == 1
     assert records[0].task_type == "recipe"
     assert records[0].analysis.name == "Chicken rice bowl"
+
+
+def test_image_record_omits_item_count_from_persisted_nutrition_payload():
+    analysis = NutritionAnalysis(
+        ingredients=[{"name": "croissant", "amount": "3 x 1 piece", "calories": 690.0}],
+        category="food",
+        calories=690.0,
+        item_count=3,
+        macros=MacroBreakdown(carbs=78.0, protein=15.0, fat=36.0),
+        tags=["pastry"],
+        alcohol_units=0.0,
+    )
+
+    record = ImageRecord.from_analysis("croissant.jpg", "nutrition", analysis)
+    serialized = record.to_dict()
+
+    assert "item_count" not in serialized["analysis"]
+
+    restored = ImageRecord.from_dict(serialized)
+    assert restored.analysis.item_count == 1
+    assert restored.analysis.calories == 690.0
 
 
 def test_process_text_routes_to_echo(tmp_path, monkeypatch):

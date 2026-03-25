@@ -17,6 +17,7 @@ from .models import (
     TextRoutingDecision,
     VocabularyWorkflowResult,
 )
+from .openai_schema import build_strict_openai_schema
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +196,7 @@ def _call_text_with_schema(prompt: str, user_text: str, response_model: type, re
             "format": {
                 "type": "json_schema",
                 "name": response_name,
-                "schema": response_model.model_json_schema(),
+                "schema": build_strict_openai_schema(response_model),
                 "strict": True,
             }
         },

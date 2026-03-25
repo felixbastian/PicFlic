@@ -349,7 +349,14 @@ def format_result_response(result: dict, persistence_note: str | None = None) ->
     if lines:
         lines.append("")
 
-    lines.append(f"<b>Calories:</b> {analysis['calories']}")
+    item_count = int(analysis.get("item_count") or 1)
+    total_calories = float(analysis["calories"])
+    if item_count > 1:
+        lines.append(f"<b>Amount:</b> {item_count}")
+        single_item_calories = total_calories / item_count
+        lines.append(f"<b>Calories:</b> {item_count} * {single_item_calories} = {total_calories}")
+    else:
+        lines.append(f"<b>Calories:</b> {total_calories}")
     lines.append(f"<b>Tags:</b> {escape(', '.join(str(tag) for tag in analysis.get('tags', [])))}")
     if persistence_note:
         update_note, total_note = _split_nutrition_persistence_note(persistence_note)
