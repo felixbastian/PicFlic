@@ -34,6 +34,7 @@ This project includes:
    ```bash
    OPENAI_API_KEY=your_openai_api_key_here
    PICTOAGENT_OPENAI_MODEL=gpt-5
+   PICTOAGENT_OPENAI_TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
    PICTOAGENT_DATABASE_PATH=./data/pictoagent.db
    TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
    ```

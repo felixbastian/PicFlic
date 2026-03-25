@@ -16,6 +16,7 @@ DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "pictoagent.db"
 class AppConfig:
     openai_api_key: str | None
     openai_model: str = "gpt-5"
+    openai_transcription_model: str = "gpt-4o-mini-transcribe"
     database_path: Path = DEFAULT_DATABASE_PATH
     telegram_token: str | None = None
     db_user: str | None = None
@@ -40,6 +41,9 @@ def load_config(env_file: str | Path = DEFAULT_ENV_FILE) -> AppConfig:
         openai_model=os.getenv("PICTOAGENT_OPENAI_MODEL")
         or env_values.get("PICTOAGENT_OPENAI_MODEL")
         or "gpt-5",
+        openai_transcription_model=os.getenv("PICTOAGENT_OPENAI_TRANSCRIPTION_MODEL")
+        or env_values.get("PICTOAGENT_OPENAI_TRANSCRIPTION_MODEL")
+        or "gpt-4o-mini-transcribe",
         database_path=_resolve_database_path(
             os.getenv("PICTOAGENT_DATABASE_PATH")
             or env_values.get("PICTOAGENT_DATABASE_PATH")

@@ -49,9 +49,16 @@ class _FakePhoto:
         return _FakeFile()
 
 
+class _FakeVoice:
+    async def get_file(self) -> _FakeFile:
+        return _FakeFile()
+
+
 class _FakeMessage:
     def __init__(self) -> None:
         self.photo = [_FakePhoto()]
+        self.voice = None
+        self.audio = None
         self.text = None
         self.caption = None
         self.replies: list[str] = []
@@ -256,7 +263,7 @@ def test_start_replies_with_welcome_message():
     asyncio.run(start(update, SimpleNamespace()))
 
     assert message.replies == [
-        "Hi! Send me a photo of your food or a receipt, ask about your tracked expenses and nutrition, send me a French word to practice vocabulary, or tell me to save a recipe to your collection."
+        "Hi! Send me a photo of your food or a receipt, a voice message, ask about your tracked expenses and nutrition, send me a French word to practice vocabulary, or tell me to save a recipe to your collection."
     ]
 
 
@@ -716,6 +723,38 @@ def test_handle_message_echoes_plain_text_when_orchestrator_says_echo():
     assert agent.text_calls[0]["metadata"] == {"recent_history": []}
     assert agent.text_calls[0]["log_context"]["process_id"].startswith("telegram-")
     assert message.replies == ["hello there"]
+
+
+def test_handle_message_transcribes_voice_message_before_sending_to_agent(monkeypatch):
+    monkeypatch.setattr("src.bot.transcribe_audio", lambda path: "buy oat milk tomorrow")
+
+    message = _FakeMessage()
+    message.photo = []
+    message.voice = _FakeVoice()
+    agent = _FakeAgent(text_result={"workflow_type": "echo"})
+    update = SimpleNamespace(
+        update_id=1007,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+
+    asyncio.run(
+        handle_message(
+            update,
+            SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={}),
+            agent,
+        )
+    )
+
+    assert agent.image_calls == []
+    assert agent.text_calls[0]["text"] == "buy oat milk tomorrow"
+    assert agent.text_calls[0]["metadata"] == {"recent_history": []}
+    assert message.replies == ["buy oat milk tomorrow"]
 
 
 def test_handle_message_stores_new_vocabulary_entry():

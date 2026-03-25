@@ -4,6 +4,7 @@ from src.config import load_config
 def test_load_config_reads_dotenv(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("PICTOAGENT_OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("PICTOAGENT_OPENAI_TRANSCRIPTION_MODEL", raising=False)
     monkeypatch.delenv("DB_USER", raising=False)
     monkeypatch.delenv("DB_PASSWORD", raising=False)
     monkeypatch.delenv("DB_NAME", raising=False)
@@ -15,6 +16,7 @@ def test_load_config_reads_dotenv(tmp_path, monkeypatch):
     env_file.write_text(
         "OPENAI_API_KEY=test-key\n"
         "PICTOAGENT_OPENAI_MODEL=test-model\n"
+        "PICTOAGENT_OPENAI_TRANSCRIPTION_MODEL=test-transcription-model\n"
         "PICTOAGENT_DATABASE_PATH=./data/test.db\n"
         "DB_USER=app_user\n"
         "DB_PASSWORD=secret\n"
@@ -27,6 +29,7 @@ def test_load_config_reads_dotenv(tmp_path, monkeypatch):
 
     assert config.openai_api_key == "test-key"
     assert config.openai_model == "test-model"
+    assert config.openai_transcription_model == "test-transcription-model"
     assert config.database_path.name == "test.db"
     assert config.database_path.parent.name == "data"
     assert config.db_user == "app_user"
@@ -40,6 +43,7 @@ def test_load_config_reads_dotenv(tmp_path, monkeypatch):
 def test_load_config_prefers_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "env-key")
     monkeypatch.setenv("PICTOAGENT_OPENAI_MODEL", "env-model")
+    monkeypatch.setenv("PICTOAGENT_OPENAI_TRANSCRIPTION_MODEL", "env-transcription-model")
     monkeypatch.setenv("PICTOAGENT_DATABASE_PATH", "/tmp/env.db")
     monkeypatch.setenv("DB_USER", "env-user")
     monkeypatch.setenv("DB_PASSWORD", "env-password")
@@ -52,6 +56,7 @@ def test_load_config_prefers_environment(tmp_path, monkeypatch):
     env_file.write_text(
         "OPENAI_API_KEY=file-key\n"
         "PICTOAGENT_OPENAI_MODEL=file-model\n"
+        "PICTOAGENT_OPENAI_TRANSCRIPTION_MODEL=file-transcription-model\n"
         "PICTOAGENT_DATABASE_PATH=./data/file.db\n"
         "DB_USER=file-user\n"
         "DB_PASSWORD=file-password\n"
@@ -64,6 +69,7 @@ def test_load_config_prefers_environment(tmp_path, monkeypatch):
 
     assert config.openai_api_key == "env-key"
     assert config.openai_model == "env-model"
+    assert config.openai_transcription_model == "env-transcription-model"
     assert str(config.database_path) == "/tmp/env.db"
     assert config.db_user == "env-user"
     assert config.db_password == "env-password"

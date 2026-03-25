@@ -57,6 +57,10 @@ def _describe_update(update: Update) -> str:
         return "non_message_update"
     if update.message.photo:
         return "photo_message"
+    if update.message.voice:
+        return "voice_message"
+    if update.message.audio:
+        return "audio_message"
     if update.message.text:
         return "text_message"
     return "message_other"

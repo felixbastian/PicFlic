@@ -18,7 +18,7 @@ from .agent import PictoAgent
 from .db import PostgresDatabase
 from .logging_context import bind_log_context, generate_process_id, get_log_context, reset_log_context
 from .models import ExpenseAnalysis, NutritionAnalysis, RecipeAnalysis
-from .utils import correct_nutrition_analysis
+from .utils import correct_nutrition_analysis, transcribe_audio
 from .vocabulary_review import (
     build_review_prompt,
     build_review_response,
@@ -41,8 +41,207 @@ _LAST_NUTRITION_RESULT_KEY = "_picflic_last_nutrition_result"
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
     await update.message.reply_text(
-        "Hi! Send me a photo of your food or a receipt, ask about your tracked expenses and nutrition, send me a French word to practice vocabulary, or tell me to save a recipe to your collection."
+        "Hi! Send me a photo of your food or a receipt, a voice message, ask about your tracked expenses and nutrition, send me a French word to practice vocabulary, or tell me to save a recipe to your collection."
     )
+
+
+def _describe_message_kind(message: Any) -> str:
+    if getattr(message, "photo", None):
+        return "photo"
+    if getattr(message, "voice", None) is not None:
+        return "voice"
+    if getattr(message, "audio", None) is not None:
+        return "audio"
+    if getattr(message, "text", None):
+        return "text"
+    return "other"
+
+
+def _telegram_audio_suffix(message: Any) -> str:
+    voice = getattr(message, "voice", None)
+    if voice is not None:
+        return ".ogg"
+
+    audio = getattr(message, "audio", None)
+    file_name = getattr(audio, "file_name", None)
+    if isinstance(file_name, str):
+        suffix = os.path.splitext(file_name)[1].strip()
+        if suffix:
+            return suffix
+
+    mime_type = str(getattr(audio, "mime_type", "") or "").lower()
+    if "mpeg" in mime_type or mime_type.endswith("/mp3"):
+        return ".mp3"
+    if "mp4" in mime_type or "m4a" in mime_type or "aac" in mime_type:
+        return ".m4a"
+    if "wav" in mime_type:
+        return ".wav"
+    if "ogg" in mime_type or "opus" in mime_type:
+        return ".ogg"
+    return ".audio"
+
+
+async def _transcribe_message_audio(message: Any) -> str:
+    audio_message = getattr(message, "voice", None) or getattr(message, "audio", None)
+    if audio_message is None:
+        raise ValueError("Telegram message does not contain voice or audio content")
+
+    file = await audio_message.get_file()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=_telegram_audio_suffix(message)) as tmp_file:
+        await file.download_to_drive(tmp_file.name)
+        audio_path = tmp_file.name
+
+    try:
+        return transcribe_audio(audio_path)
+    finally:
+        os.unlink(audio_path)
+
+
+async def _handle_text_input(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    agent: PictoAgent,
+    postgres_db: Optional[PostgresDatabase],
+    incoming_text: str,
+) -> None:
+    logger.debug("Processing text input")
+    if postgres_db is not None and update.effective_user is not None:
+        pending_review = await postgres_db.get_pending_vocabulary_review(update.effective_user.id)
+        if pending_review is not None:
+            bind_log_context(user_id=pending_review.user_id, workflow="vocabulary_review")
+            if is_shelf_request(incoming_text):
+                review_result = await postgres_db.record_vocabulary_review_result(
+                    pending_review.vocabulary_id,
+                    shelved=True,
+                )
+            else:
+                review_result = await postgres_db.record_vocabulary_review_result(
+                    pending_review.vocabulary_id,
+                    correct=is_review_answer_correct(pending_review.french_word, incoming_text),
+                )
+            response = build_review_response(pending_review, review_result)
+            await update.message.reply_text(response)
+            next_review_sent = False
+            if postgres_db is not None:
+                next_review_sent = await dispatch_next_due_vocabulary_review_for_user(
+                    context.application,
+                    postgres_db,
+                    pending_review.user_id,
+                )
+            remember_text_turn(
+                context,
+                incoming_text,
+                [response],
+                workflow_type="vocabulary",
+            )
+            logger.info(
+                "Handled vocabulary review answer",
+                extra={
+                    "event": "vocabulary_review_answered",
+                    "vocabulary_id": pending_review.vocabulary_id,
+                    "correct": review_result.correct,
+                    "shelved": review_result.shelved,
+                    "finished": review_result.finished,
+                    "next_due_review_sent": next_review_sent,
+                },
+            )
+            return
+
+    if await try_apply_latest_nutrition_correction(update, context, agent, postgres_db, incoming_text):
+        return
+
+    recent_history = get_recent_history(context)
+    result = agent.process_text(
+        incoming_text,
+        metadata={"recent_history": recent_history},
+    )
+    logger.info(
+        "Text workflow produced result",
+        extra={
+            "event": "agent_text_result",
+            "workflow_type": result["workflow_type"],
+            "explanation": result.get("explanation"),
+            "sql_query": result.get("sql_query"),
+        },
+    )
+    if result["workflow_type"] == "echo":
+        echo_text = incoming_text
+        await update.message.reply_text(echo_text)
+        remember_text_turn(context, incoming_text, [echo_text], workflow_type="echo")
+    elif result["workflow_type"] == "vocabulary":
+        response = result["assistant_reply"]
+        if result.get("store_vocabulary") and postgres_db is not None:
+            user_id = await resolve_user_id(update, context, postgres_db)
+            await postgres_db.store_vocabulary(
+                user_id,
+                result["french_word"],
+                result["english_description"],
+            )
+            response = format_vocabulary_response(response, "Saved to your vocabulary.")
+            logger.info(
+                "Stored vocabulary workflow result",
+                extra={
+                    "event": "agent_vocabulary_stored",
+                    "french_word": result.get("french_word"),
+                },
+            )
+        await update.message.reply_text(response)
+        remember_text_turn(context, incoming_text, [response], workflow_type="vocabulary")
+    elif result["workflow_type"] == "recipe_collection":
+        if postgres_db is None:
+            await update.message.reply_text("Recipe collection storage is not available right now.")
+            remember_text_turn(
+                context,
+                incoming_text,
+                ["Recipe collection storage is not available right now."],
+                workflow_type="recipe_collection",
+            )
+            return
+
+        user_id = await resolve_user_id(update, context, postgres_db)
+        await postgres_db.store_dish(
+            user_id,
+            RecipeAnalysis.model_validate(
+                {field_name: result.get(field_name) for field_name in _RECIPE_ANALYSIS_FIELDS}
+            ),
+        )
+        response = format_recipe_response(result, "Recipe added to your collection.")
+        await update.message.reply_text(response)
+        remember_text_turn(context, incoming_text, [response], workflow_type="recipe_collection")
+    else:
+        if postgres_db is None:
+            await update.message.reply_text("Database-backed questions are not available right now.")
+            remember_text_turn(
+                context,
+                incoming_text,
+                ["Database-backed questions are not available right now."],
+                workflow_type=result["workflow_type"],
+            )
+            return
+
+        await update.message.reply_text(result["explanation"])
+        user_id = await resolve_user_id(update, context, postgres_db)
+        rows = await postgres_db.execute_guarded_query(
+            result["sql_query"],
+            user_id,
+            _QUERY_ALLOWED_TABLES[result["workflow_type"]],
+        )
+        logger.info(
+            "Query workflow returned rows",
+            extra={"event": "agent_query_rows", "rows": rows, "workflow_type": result["workflow_type"]},
+        )
+        response_messages = [result["explanation"]]
+        if len(rows) <= 1:
+            response_messages.append(format_query_response(result, rows[0] if rows else {}))
+        else:
+            response_messages.append(format_multirow_query_response(result, rows))
+        await update.message.reply_text(response_messages[-1])
+        remember_text_turn(
+            context,
+            incoming_text,
+            response_messages,
+            workflow_type=result["workflow_type"],
+        )
 
 
 async def handle_message(
@@ -60,19 +259,24 @@ async def handle_message(
     )
     try:
         user = update.effective_user.username if update.effective_user else "unknown"
+        message = update.message
+        if message is None:
+            logger.warning("Received Telegram update without a message payload")
+            return
+
         logger.info(
             "Handling Telegram message",
             extra={
                 "event": "telegram_message_received",
-                "message_kind": "photo" if update.message.photo else "text",
-                "has_caption": bool(update.message.caption),
-                "text_preview": (update.message.text or "")[:200],
+                "message_kind": _describe_message_kind(message),
+                "has_caption": bool(message.caption),
+                "text_preview": (message.text or "")[:200],
             },
         )
 
-        if update.message.photo:
+        if message.photo:
             logger.info("Processing photo from %s", user)
-            photo = update.message.photo[-1]
+            photo = message.photo[-1]
             file = await photo.get_file()
 
             with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
@@ -81,8 +285,8 @@ async def handle_message(
 
             try:
                 metadata: dict[str, str] = {}
-                if update.message.caption:
-                    metadata["user_prompt"] = update.message.caption
+                if message.caption:
+                    metadata["user_prompt"] = message.caption
 
                 result = agent.process_image(image_path, metadata=metadata)
                 logger.info(
@@ -98,9 +302,9 @@ async def handle_message(
                     persistence_note = await persist_result(update, context, postgres_db, result)
                 response = format_result_response(result, persistence_note)
                 if result["task_type"] == "nutrition":
-                    await update.message.reply_text(response, parse_mode=ParseMode.HTML)
+                    await message.reply_text(response, parse_mode=ParseMode.HTML)
                 else:
-                    await update.message.reply_text(response)
+                    await message.reply_text(response)
                 if result["task_type"] == "nutrition":
                     remember_latest_nutrition_result(context, result)
                 else:
@@ -108,153 +312,30 @@ async def handle_message(
                 logger.info("Successfully analyzed photo from %s", user)
             except Exception as e:
                 logger.error("Failed to analyze image from %s: %s", user, str(e))
-                await update.message.reply_text(f"Error analyzing image: {e}")
+                await message.reply_text(f"Error analyzing image: {e}")
             finally:
                 os.unlink(image_path)
         else:
-            logger.debug("Processing text message from %s", user)
-            incoming_text = update.message.text or ""
-            if postgres_db is not None and update.effective_user is not None:
-                pending_review = await postgres_db.get_pending_vocabulary_review(update.effective_user.id)
-                if pending_review is not None:
-                    bind_log_context(user_id=pending_review.user_id, workflow="vocabulary_review")
-                    if is_shelf_request(incoming_text):
-                        review_result = await postgres_db.record_vocabulary_review_result(
-                            pending_review.vocabulary_id,
-                            shelved=True,
-                        )
-                    else:
-                        review_result = await postgres_db.record_vocabulary_review_result(
-                            pending_review.vocabulary_id,
-                            correct=is_review_answer_correct(pending_review.french_word, incoming_text),
-                        )
-                    response = build_review_response(pending_review, review_result)
-                    await update.message.reply_text(response)
-                    next_review_sent = False
-                    if postgres_db is not None:
-                        next_review_sent = await dispatch_next_due_vocabulary_review_for_user(
-                            context.application,
-                            postgres_db,
-                            pending_review.user_id,
-                        )
-                    remember_text_turn(
-                        context,
-                        incoming_text,
-                        [response],
-                        workflow_type="vocabulary",
-                    )
-                    logger.info(
-                        "Handled vocabulary review answer",
-                        extra={
-                            "event": "vocabulary_review_answered",
-                            "vocabulary_id": pending_review.vocabulary_id,
-                            "correct": review_result.correct,
-                            "shelved": review_result.shelved,
-                            "finished": review_result.finished,
-                            "next_due_review_sent": next_review_sent,
-                        },
-                        )
-                    return
-
-            if await try_apply_latest_nutrition_correction(update, context, agent, postgres_db, incoming_text):
-                return
-
-            recent_history = get_recent_history(context)
-            result = agent.process_text(
-                incoming_text,
-                metadata={"recent_history": recent_history},
-            )
-            logger.info(
-                "Text workflow produced result",
-                extra={
-                    "event": "agent_text_result",
-                    "workflow_type": result["workflow_type"],
-                    "explanation": result.get("explanation"),
-                    "sql_query": result.get("sql_query"),
-                },
-            )
-            if result["workflow_type"] == "echo":
-                echo_text = incoming_text
-                await update.message.reply_text(echo_text)
-                remember_text_turn(context, incoming_text, [echo_text], workflow_type="echo")
-            elif result["workflow_type"] == "vocabulary":
-                response = result["assistant_reply"]
-                if result.get("store_vocabulary") and postgres_db is not None:
-                    user_id = await resolve_user_id(update, context, postgres_db)
-                    await postgres_db.store_vocabulary(
-                        user_id,
-                        result["french_word"],
-                        result["english_description"],
-                    )
-                    response = format_vocabulary_response(response, "Saved to your vocabulary.")
-                    logger.info(
-                        "Stored vocabulary workflow result",
-                        extra={
-                            "event": "agent_vocabulary_stored",
-                            "french_word": result.get("french_word"),
-                        },
-                    )
-                await update.message.reply_text(response)
-                remember_text_turn(context, incoming_text, [response], workflow_type="vocabulary")
-            elif result["workflow_type"] == "recipe_collection":
-                if postgres_db is None:
-                    await update.message.reply_text("Recipe collection storage is not available right now.")
-                    remember_text_turn(
-                        context,
-                        incoming_text,
-                        ["Recipe collection storage is not available right now."],
-                        workflow_type="recipe_collection",
+            incoming_text = message.text or ""
+            if message.voice is not None or message.audio is not None:
+                logger.info("Transcribing Telegram audio message from %s", user)
+                incoming_text = await _transcribe_message_audio(message)
+                if not incoming_text:
+                    await message.reply_text(
+                        "I couldn't transcribe that voice message. Please try again or send text."
                     )
                     return
-
-                user_id = await resolve_user_id(update, context, postgres_db)
-                await postgres_db.store_dish(
-                    user_id,
-                    RecipeAnalysis.model_validate(
-                        {field_name: result.get(field_name) for field_name in _RECIPE_ANALYSIS_FIELDS}
-                    ),
-                )
-                response = format_recipe_response(result, "Recipe added to your collection.")
-                await update.message.reply_text(response)
-                remember_text_turn(context, incoming_text, [response], workflow_type="recipe_collection")
-            else:
-                if postgres_db is None:
-                    await update.message.reply_text("Database-backed questions are not available right now.")
-                    remember_text_turn(
-                        context,
-                        incoming_text,
-                        ["Database-backed questions are not available right now."],
-                        workflow_type=result["workflow_type"],
-                    )
-                    return
-
-                await update.message.reply_text(result["explanation"])
-                user_id = await resolve_user_id(update, context, postgres_db)
-                rows = await postgres_db.execute_guarded_query(
-                    result["sql_query"],
-                    user_id,
-                    _QUERY_ALLOWED_TABLES[result["workflow_type"]],
-                )
                 logger.info(
-                    "Query workflow returned rows",
-                    extra={"event": "agent_query_rows", "rows": rows, "workflow_type": result["workflow_type"]},
+                    "Transcribed Telegram audio message",
+                    extra={"event": "telegram_audio_transcribed", "text_preview": incoming_text[:200]},
                 )
-                response_messages = [result["explanation"]]
-                if len(rows) <= 1:
-                    response_messages.append(format_query_response(result, rows[0] if rows else {}))
-                else:
-                    response_messages.append(format_multirow_query_response(result, rows))
-                await update.message.reply_text(response_messages[-1])
-                remember_text_turn(
-                    context,
-                    incoming_text,
-                    response_messages,
-                    workflow_type=result["workflow_type"],
-                )
+
+            await _handle_text_input(update, context, agent, postgres_db, incoming_text)
     except Exception as e:
         logger.exception("Error handling message: %s", str(e))
         try:
-            await update.message.reply_text("Sorry, an error occurred while processing your message.")
+            if update.message is not None:
+                await update.message.reply_text("Sorry, an error occurred while processing your message.")
         except Exception:
             pass
     finally:
@@ -696,7 +777,6 @@ async def dispatch_next_due_vocabulary_review_for_user(
         )
         return False
     return await send_vocabulary_review_prompt(application, postgres_db, review)
-    
 
 
 def create_telegram_application(
@@ -710,7 +790,7 @@ def create_telegram_application(
     application.add_handler(CommandHandler("start", start))
     application.add_handler(
         MessageHandler(
-            filters.TEXT | filters.PHOTO,
+            filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO,
             lambda update, context: handle_message(update, context, agent, postgres_db),
         )
     )

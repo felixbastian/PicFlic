@@ -133,6 +133,34 @@ def analyze_image(image_path: str, metadata: Dict[str, Any] | None = None) -> Nu
     return analyze_nutrition_image(image_path, metadata)
 
 
+def transcribe_audio(audio_path: str) -> str:
+    """Transcribe an audio file with OpenAI's Audio API."""
+    config = load_config()
+    if not config.openai_api_key:
+        raise ValueError(
+            "Missing OpenAI API key. Set OPENAI_API_KEY in the environment or in a local .env file."
+        )
+
+    client = OpenAI(api_key=config.openai_api_key)
+    with Path(audio_path).open("rb") as audio_file:
+        response = client.audio.transcriptions.create(
+            file=audio_file,
+            model=config.openai_transcription_model,
+        )
+
+    transcription_text = response if isinstance(response, str) else response.text
+    logger.info(
+        "Received audio transcription",
+        extra={
+            "event": "llm_audio_transcription",
+            "audio_path": audio_path,
+            "model": config.openai_transcription_model,
+            "transcription_preview": transcription_text[:200],
+        },
+    )
+    return transcription_text.strip()
+
+
 def _analyze_with_schema(
     image_path: str,
     metadata: Dict[str, Any] | None,
