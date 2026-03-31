@@ -5,7 +5,13 @@ from .query import SQLQueryPlan, TextRoutingDecision, TextWorkflowType
 from .recipe import CarbSource, FrequencyRotation, MeatType, RecipeAnalysis, RecipeCollectionResult
 from .records import AnalysisPayload, ImageRecord
 from .routing import RoutingDecision
-from .vocabulary import DueVocabularyReview, VocabularyReviewResult, VocabularyReviewStage, VocabularyWorkflowResult
+from .vocabulary import (
+    DueVocabularyReview,
+    VocabularyReviewResult,
+    VocabularyReviewStage,
+    VocabularySynonymHint,
+    VocabularyWorkflowResult,
+)
 
 __all__ = [
     "AnalysisPayload",
@@ -30,5 +36,6 @@ __all__ = [
     "DueVocabularyReview",
     "VocabularyReviewResult",
     "VocabularyReviewStage",
+    "VocabularySynonymHint",
     "VocabularyWorkflowResult",
 ]

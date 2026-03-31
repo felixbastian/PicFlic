@@ -10,7 +10,13 @@ from typing_extensions import NotRequired, TypedDict
 
 from ..db import PostgresDatabase
 from ..models import DueVocabularyReview, VocabularyReviewResult
-from ..vocabulary_review import build_review_response, is_review_answer_correct, is_shelf_request
+from ..vocabulary_review import (
+    build_review_response,
+    is_pass_request,
+    is_review_answer_correct,
+    is_shelf_request,
+    maybe_build_synonym_second_chance,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +28,9 @@ class _VocabularyState(TypedDict):
     pending_review: NotRequired[DueVocabularyReview | None]
     correct: NotRequired[bool]
     shelved: NotRequired[bool]
+    pass_requested: NotRequired[bool]
+    needs_second_chance: NotRequired[bool]
+    second_chance_response: NotRequired[str]
     review_result: NotRequired[VocabularyReviewResult]
     response: NotRequired[str]
 
@@ -56,10 +65,40 @@ def _evaluate_review(state: _VocabularyState, runtime: Any) -> dict:
     pending_review = state["pending_review"]
     answer_text = state["answer_text"]
     shelved = is_shelf_request(answer_text)
+    pass_requested = False
     correct = False
     if not shelved:
-        correct = is_review_answer_correct(pending_review.french_word, answer_text)
-    return {"shelved": shelved, "correct": correct}
+        pass_requested = is_pass_request(answer_text)
+        if not pass_requested:
+            correct = is_review_answer_correct(pending_review.french_word, answer_text)
+    return {"shelved": shelved, "pass_requested": pass_requested, "correct": correct}
+
+
+def _next_step_after_evaluation(state: _VocabularyState) -> str:
+    if state["shelved"] or state["correct"] or state["pass_requested"]:
+        return "persist_review_result"
+    return "check_second_chance"
+
+
+def _check_second_chance(state: _VocabularyState, runtime: Any) -> dict:
+    pending_review = state["pending_review"]
+    second_chance_response = maybe_build_synonym_second_chance(pending_review, state["answer_text"])
+    if second_chance_response is None:
+        return {"needs_second_chance": False}
+    return {
+        "needs_second_chance": True,
+        "second_chance_response": second_chance_response,
+    }
+
+
+def _next_step_after_second_chance(state: _VocabularyState) -> str:
+    if state["needs_second_chance"]:
+        return "build_second_chance_response"
+    return "persist_review_result"
+
+
+def _build_second_chance_response(state: _VocabularyState, runtime: Any) -> dict:
+    return {"response": state["second_chance_response"]}
 
 
 async def _persist_review_result(state: _VocabularyState, runtime: Any) -> dict:
@@ -104,7 +143,9 @@ class VocabularyAgent:
         graph.add_node("load_review", _load_review)
         graph.add_node("fetch_pending_review", _fetch_pending_review)
         graph.add_node("evaluate_review", _evaluate_review)
+        graph.add_node("check_second_chance", _check_second_chance)
         graph.add_node("persist_review_result", _persist_review_result)
+        graph.add_node("build_second_chance_response", _build_second_chance_response)
         graph.add_node("build_review_response", _build_review_response)
         graph.add_node("build_no_pending_response", _build_no_pending_response)
         graph.add_edge("load_review", "fetch_pending_review")
@@ -116,10 +157,26 @@ class VocabularyAgent:
                 "build_no_pending_response": "build_no_pending_response",
             },
         )
-        graph.add_edge("evaluate_review", "persist_review_result")
+        graph.add_conditional_edges(
+            "evaluate_review",
+            _next_step_after_evaluation,
+            {
+                "persist_review_result": "persist_review_result",
+                "check_second_chance": "check_second_chance",
+            },
+        )
+        graph.add_conditional_edges(
+            "check_second_chance",
+            _next_step_after_second_chance,
+            {
+                "build_second_chance_response": "build_second_chance_response",
+                "persist_review_result": "persist_review_result",
+            },
+        )
         graph.add_edge("persist_review_result", "build_review_response")
         graph.set_entry_point("load_review")
         graph.set_finish_point("build_review_response")
+        graph.set_finish_point("build_second_chance_response")
         graph.set_finish_point("build_no_pending_response")
         return graph.compile()
 
