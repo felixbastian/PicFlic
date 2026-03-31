@@ -11,6 +11,7 @@ from telegram.ext import ContextTypes
 from ..agents import VocabularyAgent
 from ..db import PostgresDatabase
 from ..logging_context import bind_log_context, generate_process_id, get_log_context, reset_log_context
+from ..vocabulary_review import is_shelf_request
 from .dispatch import dispatch_next_due_vocabulary_review_for_user
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,9 @@ async def handle_message(
             return
 
         user_id = await _activate_user(postgres_db, update)
+        if await _try_shelf_quoted_review(update, postgres_db):
+            return
+
         incoming_text = update.message.text or ""
         result = await agent.process_review_answer(update.effective_user.id, incoming_text, postgres_db)
         await update.message.reply_text(result["response"])
@@ -144,3 +148,64 @@ async def _activate_user(postgres_db: PostgresDatabase, update: Update) -> str:
         extra={"event": "vocabulary_bot_activated", "resolved_user_id": user_id},
     )
     return user_id
+
+
+async def _try_shelf_quoted_review(update: Update, postgres_db: PostgresDatabase) -> bool:
+    message = update.message
+    if message is None or update.effective_user is None:
+        return False
+
+    if not is_shelf_request(message.text or ""):
+        return False
+
+    quoted_prompt = _quoted_prompt_text(update)
+    if quoted_prompt is None:
+        return False
+
+    reference = await postgres_db.get_recent_prompted_vocabulary_review_by_prompt(
+        update.effective_user.id,
+        quoted_prompt,
+    )
+    if reference is None:
+        logger.info(
+            "Could not resolve quoted vocabulary review prompt for shelving",
+            extra={
+                "event": "vocabulary_bot_quote_shelf_not_found",
+                "telegram_user_id": update.effective_user.id,
+                "quoted_prompt_preview": quoted_prompt[:120],
+            },
+        )
+        await message.reply_text("I could not match that quoted review prompt to a vocabulary card.")
+        return True
+
+    await postgres_db.record_vocabulary_review_result(reference.vocabulary_id, shelved=True)
+    logger.info(
+        "Shelved vocabulary from quoted review prompt",
+        extra={
+            "event": "vocabulary_bot_quote_shelf_succeeded",
+            "telegram_user_id": update.effective_user.id,
+            "vocabulary_id": reference.vocabulary_id,
+        },
+    )
+    await message.reply_text(f'Okay, I shelved "{reference.french_word}" for you.')
+    return True
+
+
+def _quoted_prompt_text(update: Update) -> str | None:
+    message = update.message
+    if message is None:
+        return None
+
+    reply_to_message = getattr(message, "reply_to_message", None)
+    if reply_to_message is not None:
+        reply_text = getattr(reply_to_message, "text", None)
+        if reply_text:
+            return reply_text.strip()
+
+    quote = getattr(message, "quote", None)
+    if quote is not None:
+        quote_text = getattr(quote, "text", None)
+        if quote_text:
+            return quote_text.strip()
+
+    return None

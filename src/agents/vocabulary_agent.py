@@ -39,99 +39,6 @@ class _VocabularyContext(TypedDict):
     db: PostgresDatabase
 
 
-def _load_review(state: _VocabularyState, runtime: Any) -> dict:
-    return {"answer_text": state["answer_text"].strip()}
-
-
-async def _fetch_pending_review(state: _VocabularyState, runtime: Any) -> dict:
-    db: PostgresDatabase = runtime.context["db"]
-    pending_review = await db.get_pending_vocabulary_review(state["telegram_user_id"])
-    if pending_review is None:
-        logger.info(
-            "No pending vocabulary review for Telegram user",
-            extra={"event": "vocabulary_review_none_pending", "telegram_user_id": state["telegram_user_id"]},
-        )
-        return {"has_pending_review": False, "pending_review": None}
-    return {"has_pending_review": True, "pending_review": pending_review}
-
-
-def _next_step(state: _VocabularyState) -> str:
-    if state["has_pending_review"]:
-        return "evaluate_review"
-    return "build_no_pending_response"
-
-
-def _evaluate_review(state: _VocabularyState, runtime: Any) -> dict:
-    pending_review = state["pending_review"]
-    answer_text = state["answer_text"]
-    shelved = is_shelf_request(answer_text)
-    pass_requested = False
-    correct = False
-    if not shelved:
-        pass_requested = is_pass_request(answer_text)
-        if not pass_requested:
-            correct = is_review_answer_correct(pending_review.french_word, answer_text)
-    return {"shelved": shelved, "pass_requested": pass_requested, "correct": correct}
-
-
-def _next_step_after_evaluation(state: _VocabularyState) -> str:
-    if state["shelved"] or state["correct"] or state["pass_requested"]:
-        return "persist_review_result"
-    return "check_second_chance"
-
-
-def _check_second_chance(state: _VocabularyState, runtime: Any) -> dict:
-    pending_review = state["pending_review"]
-    second_chance_response = maybe_build_synonym_second_chance(pending_review, state["answer_text"])
-    if second_chance_response is None:
-        return {"needs_second_chance": False}
-    return {
-        "needs_second_chance": True,
-        "second_chance_response": second_chance_response,
-    }
-
-
-def _next_step_after_second_chance(state: _VocabularyState) -> str:
-    if state["needs_second_chance"]:
-        return "build_second_chance_response"
-    return "persist_review_result"
-
-
-def _build_second_chance_response(state: _VocabularyState, runtime: Any) -> dict:
-    return {"response": state["second_chance_response"]}
-
-
-async def _persist_review_result(state: _VocabularyState, runtime: Any) -> dict:
-    db: PostgresDatabase = runtime.context["db"]
-    pending_review = state["pending_review"]
-    review_result = await db.record_vocabulary_review_result(
-        pending_review.vocabulary_id,
-        correct=state["correct"],
-        shelved=state["shelved"],
-    )
-    return {"review_result": review_result}
-
-
-def _build_review_response(state: _VocabularyState, runtime: Any) -> dict:
-    pending_review = state["pending_review"]
-    review_result = state["review_result"]
-    response = build_review_response(pending_review, review_result)
-    logger.info(
-        "Built vocabulary review response",
-        extra={
-            "event": "vocabulary_review_response_built",
-            "vocabulary_id": pending_review.vocabulary_id,
-            "correct": review_result.correct,
-            "shelved": review_result.shelved,
-        },
-    )
-    return {"response": response}
-
-
-def _build_no_pending_response(state: _VocabularyState, runtime: Any) -> dict:
-    return {"response": "No vocabulary review is waiting right now. Use the main bot to save new words first."}
-
-
 class VocabularyAgent:
     """Agent responsible for vocabulary review answer processing."""
 
@@ -193,6 +100,100 @@ class VocabularyAgent:
             },
             context={"db": db},
         )
+
+
+def _load_review(state: _VocabularyState, runtime: Any) -> dict:
+    return {"answer_text": state["answer_text"].strip()}
+
+
+async def _fetch_pending_review(state: _VocabularyState, runtime: Any) -> dict:
+    db: PostgresDatabase = runtime.context["db"]
+    pending_review = await db.get_pending_vocabulary_review(state["telegram_user_id"])
+    if pending_review is None:
+        logger.info(
+            "No pending vocabulary review for Telegram user",
+            extra={"event": "vocabulary_review_none_pending", "telegram_user_id": state["telegram_user_id"]},
+        )
+        return {"has_pending_review": False, "pending_review": None}
+    return {"has_pending_review": True, "pending_review": pending_review}
+
+
+def _next_step(state: _VocabularyState) -> str:
+    if state["has_pending_review"]:
+        return "evaluate_review"
+    return "build_no_pending_response"
+
+
+def _evaluate_review(state: _VocabularyState, runtime: Any) -> dict:
+    pending_review = state["pending_review"]
+    answer_text = state["answer_text"]
+    shelved = is_shelf_request(answer_text)
+    pass_requested = False
+    correct = False
+    if not shelved:
+        pass_requested = is_pass_request(answer_text)
+        if not pass_requested:
+            correct = is_review_answer_correct(pending_review.french_word, answer_text)
+    return {"shelved": shelved, "pass_requested": pass_requested, "correct": correct}
+
+
+def _build_no_pending_response(state: _VocabularyState, runtime: Any) -> dict:
+    return {"response": "No vocabulary review is waiting right now. Please use the main to interact with me. I am too stupid to understand what you want."}
+
+
+def _next_step_after_evaluation(state: _VocabularyState) -> str:
+    if state["shelved"] or state["correct"] or state["pass_requested"]:
+        return "persist_review_result"
+    return "check_second_chance"
+
+
+def _check_second_chance(state: _VocabularyState, runtime: Any) -> dict:
+    pending_review = state["pending_review"]
+    second_chance_response = maybe_build_synonym_second_chance(pending_review, state["answer_text"])
+    if second_chance_response is None:
+        return {"needs_second_chance": False}
+    return {
+        "needs_second_chance": True,
+        "second_chance_response": second_chance_response,
+    }
+
+
+def _next_step_after_second_chance(state: _VocabularyState) -> str:
+    if state["needs_second_chance"]:
+        return "build_second_chance_response"
+    return "persist_review_result"
+
+
+def _build_second_chance_response(state: _VocabularyState, runtime: Any) -> dict:
+    return {"response": state["second_chance_response"]}
+
+
+async def _persist_review_result(state: _VocabularyState, runtime: Any) -> dict:
+    db: PostgresDatabase = runtime.context["db"]
+    pending_review = state["pending_review"]
+    review_result = await db.record_vocabulary_review_result(
+        pending_review.vocabulary_id,
+        correct=state["correct"],
+        shelved=state["shelved"],
+    )
+    return {"review_result": review_result}
+
+
+def _build_review_response(state: _VocabularyState, runtime: Any) -> dict:
+    pending_review = state["pending_review"]
+    review_result = state["review_result"]
+    response = build_review_response(pending_review, review_result)
+    logger.info(
+        "Built vocabulary review response",
+        extra={
+            "event": "vocabulary_review_response_built",
+            "vocabulary_id": pending_review.vocabulary_id,
+            "correct": review_result.correct,
+            "shelved": review_result.shelved,
+        },
+    )
+    return {"response": response}
+
 
 
 __all__ = ["VocabularyAgent"]

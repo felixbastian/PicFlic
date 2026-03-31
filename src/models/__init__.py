@@ -7,6 +7,7 @@ from .records import AnalysisPayload, ImageRecord
 from .routing import RoutingDecision
 from .vocabulary import (
     DueVocabularyReview,
+    ReferencedVocabularyReview,
     VocabularyReviewResult,
     VocabularyReviewStage,
     VocabularySynonymHint,
@@ -34,6 +35,7 @@ __all__ = [
     "TextWorkflowType",
     "TrackingTaskType",
     "DueVocabularyReview",
+    "ReferencedVocabularyReview",
     "VocabularyReviewResult",
     "VocabularyReviewStage",
     "VocabularySynonymHint",

@@ -61,6 +61,18 @@ class VocabularyReviewResult(BaseModel):
     next_review_at: datetime | None
 
 
+class ReferencedVocabularyReview(BaseModel):
+    """A previously prompted vocabulary review resolved from a quoted bot message."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    vocabulary_id: str
+    user_id: str
+    telegram_user_id: int
+    french_word: str
+    english_description: str
+
+
 class VocabularySynonymHint(BaseModel):
     """Decision for giving the user a second chance on a synonym-style answer."""
 

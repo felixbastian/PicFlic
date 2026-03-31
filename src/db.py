@@ -15,6 +15,7 @@ from .models import (
     DueVocabularyReview,
     ExpenseAnalysis,
     ImageRecord,
+    ReferencedVocabularyReview,
     RecipeAnalysis,
     VocabularyReviewResult,
     VocabularyReviewStage,
@@ -691,6 +692,51 @@ class PostgresDatabase:
             if row is None:
                 return None
             return DueVocabularyReview.model_validate(_normalize_due_vocabulary_review_row(row))
+
+    async def get_recent_prompted_vocabulary_review_by_prompt(
+        self,
+        telegram_user_id: int,
+        prompt_text: str,
+        limit: int = 25,
+    ) -> ReferencedVocabularyReview | None:
+        """Resolve a quoted review prompt back to a previously prompted vocabulary item."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        normalized_prompt = prompt_text.strip()
+        if not normalized_prompt:
+            return None
+
+        from .vocabulary_review import build_review_prompt_text
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    v.vocabulary_id,
+                    v.user_id,
+                    u.telegram_user_id,
+                    v.french_word,
+                    v.english_description
+                FROM fact_vocabulary v
+                JOIN dim_user u ON u.user_id = v.user_id
+                WHERE u.telegram_user_id = $1
+                  AND v.last_review_prompted_at IS NOT NULL
+                  AND v.shelf = FALSE
+                  AND COALESCE(u.has_vocab_bot_activated, FALSE) = TRUE
+                ORDER BY v.last_review_prompted_at DESC NULLS LAST, v.created_at DESC
+                LIMIT $2
+                """,
+                telegram_user_id,
+                limit,
+            )
+
+        for row in rows:
+            reference = ReferencedVocabularyReview.model_validate(_normalize_due_vocabulary_review_row(row))
+            if build_review_prompt_text(reference.english_description) == normalized_prompt:
+                return reference
+
+        return None
 
     async def record_vocabulary_review_result(
         self,

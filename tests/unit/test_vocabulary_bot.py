@@ -4,7 +4,8 @@ from types import SimpleNamespace
 import pytest
 
 from src.logging_context import clear_log_context
-from src.models import DueVocabularyReview, VocabularyReviewResult
+from src.models import DueVocabularyReview, ReferencedVocabularyReview, VocabularyReviewResult
+from src.vocabulary_review import build_review_prompt_text
 from src.vocab_bot import dispatch_due_vocabulary_reviews, handle_message, start
 
 
@@ -16,8 +17,10 @@ def _clear_logging_context_between_tests():
 
 
 class _FakeMessage:
-    def __init__(self, text: str | None = None) -> None:
+    def __init__(self, text: str | None = None, reply_to_message=None, quote=None) -> None:
         self.text = text
+        self.reply_to_message = reply_to_message
+        self.quote = quote
         self.replies: list[str] = []
         self.reply_kwargs: list[dict] = []
 
@@ -45,6 +48,9 @@ class _FakePostgresDatabase:
         self.user_calls: list[dict] = []
         self.due_reviews: list[DueVocabularyReview] = []
         self.mark_prompted_calls: list[str] = []
+        self.prompt_reference: ReferencedVocabularyReview | None = None
+        self.prompt_lookup_calls: list[dict] = []
+        self.record_review_calls: list[dict] = []
 
     async def get_or_create_user(self, **kwargs) -> str:
         self.user_calls.append(kwargs)
@@ -61,6 +67,40 @@ class _FakePostgresDatabase:
             if review.user_id == user_id:
                 return review
         return None
+
+    async def get_recent_prompted_vocabulary_review_by_prompt(
+        self,
+        telegram_user_id: int,
+        prompt_text: str,
+        limit: int = 25,
+    ) -> ReferencedVocabularyReview | None:
+        self.prompt_lookup_calls.append(
+            {
+                "telegram_user_id": telegram_user_id,
+                "prompt_text": prompt_text,
+                "limit": limit,
+            }
+        )
+        return self.prompt_reference
+
+    async def record_vocabulary_review_result(self, vocabulary_id: str, correct: bool = False, shelved: bool = False):
+        self.record_review_calls.append(
+            {
+                "vocabulary_id": vocabulary_id,
+                "correct": correct,
+                "shelved": shelved,
+            }
+        )
+        return VocabularyReviewResult(
+            vocabulary_id=vocabulary_id,
+            user_id="user-123",
+            french_word="aller",
+            correct=correct,
+            shelved=shelved,
+            finished=False,
+            current_review_stage=None,
+            next_review_at=None,
+        )
 
 
 class _FakeVocabularyAgent:
@@ -240,3 +280,51 @@ def test_dispatch_due_vocabulary_reviews_sends_one_prompt_per_due_review():
         }
     ]
     assert postgres_db.mark_prompted_calls == ["vocab-1"]
+
+
+def test_handle_message_shelves_quoted_review_prompt_after_answer():
+    quoted_prompt = build_review_prompt_text("to go")
+    message = _FakeMessage(
+        text="shelf",
+        reply_to_message=SimpleNamespace(text=quoted_prompt),
+    )
+    update = SimpleNamespace(
+        update_id=4003,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    application = _FakeApplication()
+    context = SimpleNamespace(application=application)
+    postgres_db = _FakePostgresDatabase()
+    postgres_db.prompt_reference = ReferencedVocabularyReview(
+        vocabulary_id="vocab-9",
+        user_id="user-123",
+        telegram_user_id=42,
+        french_word="aller",
+        english_description="to go",
+    )
+    agent = _FakeVocabularyAgent()
+
+    asyncio.run(handle_message(update, context, agent, postgres_db))
+
+    assert postgres_db.prompt_lookup_calls == [
+        {
+            "telegram_user_id": 42,
+            "prompt_text": quoted_prompt,
+            "limit": 25,
+        }
+    ]
+    assert postgres_db.record_review_calls == [
+        {
+            "vocabulary_id": "vocab-9",
+            "correct": False,
+            "shelved": True,
+        }
+    ]
+    assert agent.calls == []
+    assert message.replies == ['Okay, I shelved "aller" for you.']
