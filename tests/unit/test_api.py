@@ -25,6 +25,7 @@ def test_health_reports_current_config(monkeypatch, tmp_path):
         "status": "ok",
         "database_path": str(tmp_path / "health.db"),
         "postgres_enabled": "true",
+        "vocab_bot_enabled": "false",
     }
 
 
@@ -32,6 +33,15 @@ def test_webhook_returns_500_when_bot_is_not_initialized():
     client = TestClient(api.app)
 
     response = client.post("/webhook/telegram", json={"update_id": 1})
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Error processing update: 500: Bot not initialized"
+
+
+def test_vocabulary_webhook_returns_500_when_bot_is_not_initialized():
+    client = TestClient(api.app)
+
+    response = client.post("/webhook/telegram/vocabulary", json={"update_id": 1})
 
     assert response.status_code == 500
     assert response.json()["detail"] == "Error processing update: 500: Bot not initialized"
@@ -74,7 +84,7 @@ def test_vocabulary_review_job_dispatches_due_prompts(monkeypatch, tmp_path):
     async def _dispatch(application, db):
         return 2
 
-    monkeypatch.setattr("src.api._bot_application", object())
+    monkeypatch.setattr("src.api._vocab_bot_application", object())
     monkeypatch.setattr("src.api._db", object())
     monkeypatch.setattr("src.api.dispatch_due_vocabulary_reviews", _dispatch)
 

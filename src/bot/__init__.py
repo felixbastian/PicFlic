@@ -12,12 +12,6 @@ from .formatting import (
 )
 from .handlers import handle_message, start
 from .persistence import persist_result, resolve_user_id
-from .reviews import (
-    dispatch_due_vocabulary_reviews,
-    dispatch_next_due_vocabulary_review_for_user,
-    handle_pending_vocabulary_review,
-    send_vocabulary_review_prompt,
-)
 from .state import (
     clear_latest_nutrition_result,
     get_latest_nutrition_result,
@@ -30,8 +24,6 @@ __all__ = [
     "clear_latest_nutrition_result",
     "correct_nutrition_analysis",
     "create_telegram_application",
-    "dispatch_due_vocabulary_reviews",
-    "dispatch_next_due_vocabulary_review_for_user",
     "format_multirow_query_response",
     "format_query_response",
     "format_recipe_response",
@@ -40,12 +32,10 @@ __all__ = [
     "get_latest_nutrition_result",
     "get_recent_history",
     "handle_message",
-    "handle_pending_vocabulary_review",
     "persist_result",
     "remember_latest_nutrition_result",
     "remember_text_turn",
     "resolve_user_id",
-    "send_vocabulary_review_prompt",
     "start",
     "try_apply_latest_nutrition_correction",
 ]

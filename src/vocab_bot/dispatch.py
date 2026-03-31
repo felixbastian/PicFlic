@@ -1,78 +1,17 @@
-"""Vocabulary review helpers for Telegram bot flows."""
+"""Prompt dispatch helpers for the separate vocabulary bot."""
 
 from __future__ import annotations
 
 import logging
 
-from telegram import Update
-from telegram.ext import Application, ContextTypes
+from telegram.ext import Application
 
 from ..db import PostgresDatabase
 from ..logging_context import bind_log_context, generate_process_id, get_log_context, reset_log_context
 from ..models import DueVocabularyReview
-from ..vocabulary_review import (
-    build_review_prompt,
-    build_review_response,
-    is_review_answer_correct,
-    is_shelf_request,
-)
-from .state import remember_text_turn
+from ..vocabulary_review import build_review_prompt
 
 logger = logging.getLogger(__name__)
-
-
-async def handle_pending_vocabulary_review(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    postgres_db: PostgresDatabase,
-    incoming_text: str,
-) -> bool:
-    """Handle the user's answer when a vocabulary review is currently pending."""
-    if update.effective_user is None:
-        return False
-
-    pending_review = await postgres_db.get_pending_vocabulary_review(update.effective_user.id)
-    if pending_review is None:
-        return False
-
-    bind_log_context(user_id=pending_review.user_id, workflow="vocabulary_review")
-    review_result = await _record_review_result(postgres_db, pending_review, incoming_text)
-    response = build_review_response(pending_review, review_result)
-    await update.message.reply_text(response)
-    next_review_sent = await dispatch_next_due_vocabulary_review_for_user(
-        context.application,
-        postgres_db,
-        pending_review.user_id,
-    )
-    remember_text_turn(context, incoming_text, [response], workflow_type="vocabulary")
-    logger.info(
-        "Handled vocabulary review answer",
-        extra={
-            "event": "vocabulary_review_answered",
-            "vocabulary_id": pending_review.vocabulary_id,
-            "correct": review_result.correct,
-            "shelved": review_result.shelved,
-            "finished": review_result.finished,
-            "next_due_review_sent": next_review_sent,
-        },
-    )
-    return True
-
-
-async def _record_review_result(
-    postgres_db: PostgresDatabase,
-    pending_review: DueVocabularyReview,
-    incoming_text: str,
-):
-    if is_shelf_request(incoming_text):
-        return await postgres_db.record_vocabulary_review_result(
-            pending_review.vocabulary_id,
-            shelved=True,
-        )
-    return await postgres_db.record_vocabulary_review_result(
-        pending_review.vocabulary_id,
-        correct=is_review_answer_correct(pending_review.french_word, incoming_text),
-    )
 
 
 async def dispatch_due_vocabulary_reviews(
@@ -80,7 +19,7 @@ async def dispatch_due_vocabulary_reviews(
     postgres_db: PostgresDatabase,
     limit: int = 100,
 ) -> int:
-    """Send due vocabulary review prompts, at most one pending prompt per user."""
+    """Send due vocabulary review prompts via the dedicated vocabulary bot."""
     due_reviews = await postgres_db.list_due_vocabulary_reviews(limit=limit)
     sent_count = 0
     for review in due_reviews:

@@ -217,6 +217,7 @@ class PostgresDatabase:
         username: Optional[str] = None,
         first_name: Optional[str] = None,
         last_name: Optional[str] = None,
+        has_vocab_bot_activated: bool | None = None,
     ) -> str:
         """
         Get or create a user in dim_user table.
@@ -255,7 +256,8 @@ class PostgresDatabase:
                     SET telegram_user_id = $2,
                         username = $3,
                         first_name = $4,
-                        last_name = $5
+                        last_name = $5,
+                        has_vocab_bot_activated = COALESCE($6, has_vocab_bot_activated)
                     WHERE user_id = $1
                     """,
                     resolved_user_id,
@@ -263,6 +265,7 @@ class PostgresDatabase:
                     username or str(telegram_user_id),
                     first_name,
                     last_name,
+                    has_vocab_bot_activated,
                 )
                 logger.info(
                     "Warehouse user already exists",
@@ -275,14 +278,22 @@ class PostgresDatabase:
             try:
                 await conn.execute(
                     """
-                    INSERT INTO dim_user (user_id, telegram_user_id, username, first_name, last_name)
-                    VALUES ($1, $2, $3, $4, $5)
+                    INSERT INTO dim_user (
+                        user_id,
+                        telegram_user_id,
+                        username,
+                        first_name,
+                        last_name,
+                        has_vocab_bot_activated
+                    )
+                    VALUES ($1, $2, $3, $4, $5, COALESCE($6, FALSE))
                     """,
                     user_id,
                     telegram_user_id,
                     username or str(telegram_user_id),
                     first_name,
                     last_name,
+                    has_vocab_bot_activated,
                 )
                 logger.info(
                     "Created warehouse user",
@@ -292,6 +303,22 @@ class PostgresDatabase:
             except Exception as e:
                 logger.error("Failed to create user: %s", e, extra={"event": "warehouse_user_create_failed"})
                 raise
+
+    async def has_vocab_bot_activated(self, user_id: str) -> bool:
+        """Return whether the user has activated the separate vocabulary bot."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            activated = await conn.fetchval(
+                """
+                SELECT COALESCE(has_vocab_bot_activated, FALSE)
+                FROM dim_user
+                WHERE user_id = $1
+                """,
+                user_id,
+            )
+            return bool(activated)
 
     async def store_consumption(
         self,
@@ -545,6 +572,7 @@ class PostgresDatabase:
                   AND v.next_review_at IS NOT NULL
                   AND v.next_review_at <= CURRENT_TIMESTAMP
                   AND u.telegram_user_id IS NOT NULL
+                  AND COALESCE(u.has_vocab_bot_activated, FALSE) = TRUE
                   AND NOT EXISTS (
                       SELECT 1
                       FROM fact_vocabulary pending
@@ -594,6 +622,7 @@ class PostgresDatabase:
                   AND v.next_review_at IS NOT NULL
                   AND v.next_review_at <= CURRENT_TIMESTAMP
                   AND u.telegram_user_id IS NOT NULL
+                  AND COALESCE(u.has_vocab_bot_activated, FALSE) = TRUE
                   AND NOT EXISTS (
                       SELECT 1
                       FROM fact_vocabulary pending
@@ -653,6 +682,7 @@ class PostgresDatabase:
                   AND v.awaiting_review = TRUE
                   AND v.finished = FALSE
                   AND v.shelf = FALSE
+                  AND COALESCE(u.has_vocab_bot_activated, FALSE) = TRUE
                 ORDER BY v.last_review_prompted_at DESC NULLS LAST, v.created_at ASC
                 LIMIT 1
                 """,
