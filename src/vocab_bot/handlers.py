@@ -16,12 +16,43 @@ from .dispatch import dispatch_next_due_vocabulary_review_for_user
 logger = logging.getLogger(__name__)
 
 
+def _message_preview(update: Update) -> str | None:
+    text = update.message.text if update.message is not None else None
+    if not text:
+        return None
+    return text[:80]
+
+
+def _chat_id(update: Update) -> int | None:
+    chat = getattr(update, "effective_chat", None)
+    if chat is None:
+        return None
+    return getattr(chat, "id", None)
+
+
+def _message_id(update: Update) -> int | None:
+    message = getattr(update, "message", None)
+    if message is None:
+        return None
+    return getattr(message, "message_id", None)
+
+
 async def start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     postgres_db: Optional[PostgresDatabase] = None,
 ) -> None:
     """Activate the vocabulary bot for this Telegram user."""
+    logger.info(
+        "Received vocabulary bot start command",
+        extra={
+            "event": "vocabulary_bot_start_received",
+            "telegram_user_id": update.effective_user.id if update.effective_user else None,
+            "chat_id": _chat_id(update),
+            "message_id": _message_id(update),
+            "text_preview": _message_preview(update),
+        },
+    )
     if postgres_db is None or update.effective_user is None:
         await update.message.reply_text("Vocabulary training is not available right now.")
         return
@@ -45,6 +76,16 @@ async def handle_message(
         workflow="vocabulary_review",
     )
     try:
+        logger.info(
+            "Received vocabulary bot text message",
+            extra={
+                "event": "vocabulary_bot_message_received",
+                "telegram_user_id": update.effective_user.id if update.effective_user else None,
+                "chat_id": _chat_id(update),
+                "message_id": _message_id(update),
+                "text_preview": _message_preview(update),
+            },
+        )
         if postgres_db is None or update.effective_user is None:
             await update.message.reply_text("Vocabulary training is not available right now.")
             return
@@ -82,6 +123,14 @@ async def handle_message(
 
 
 async def _activate_user(postgres_db: PostgresDatabase, update: Update) -> str:
+    logger.info(
+        "Persisting vocabulary bot activation",
+        extra={
+            "event": "vocabulary_bot_activation_persist_requested",
+            "telegram_user_id": update.effective_user.id if update.effective_user else None,
+            "username": update.effective_user.username if update.effective_user else None,
+        },
+    )
     user_id = await postgres_db.get_or_create_user(
         telegram_user_id=update.effective_user.id,
         username=update.effective_user.username,
