@@ -1,0 +1,312 @@
+"""Telegram message handlers."""
+
+from __future__ import annotations
+
+import logging
+import os
+import tempfile
+from typing import Optional
+
+from telegram import Update
+from telegram.constants import ParseMode
+from telegram.ext import ContextTypes
+
+from ..agent import PictoAgent
+from ..db import PostgresDatabase
+from ..logging_context import bind_log_context, generate_process_id, get_log_context, reset_log_context
+from ..models import RecipeAnalysis
+from .constants import QUERY_ALLOWED_TABLES, RECIPE_ANALYSIS_FIELDS, WELCOME_MESSAGE
+from .corrections import try_apply_latest_nutrition_correction
+from .formatting import (
+    format_multirow_query_response,
+    format_query_response,
+    format_recipe_response,
+    format_result_response,
+    format_vocabulary_response,
+)
+from .persistence import persist_result, resolve_user_id
+from .reviews import handle_pending_vocabulary_review
+from .state import (
+    clear_latest_nutrition_result,
+    get_recent_history,
+    remember_latest_nutrition_result,
+    remember_text_turn,
+)
+
+logger = logging.getLogger(__name__)
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send a message when the command /start is issued."""
+    await update.message.reply_text(WELCOME_MESSAGE)
+
+
+async def handle_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    agent: PictoAgent,
+    postgres_db: Optional[PostgresDatabase] = None,
+) -> None:
+    """Handle incoming Telegram messages."""
+    context_token = bind_log_context(
+        process_id=get_log_context().get("process_id") or generate_process_id("telegram"),
+        telegram_user_id=update.effective_user.id if update.effective_user else None,
+        update_id=update.update_id,
+        action="telegram_message",
+    )
+    try:
+        _log_incoming_message(update)
+        if _has_photo(update):
+            await _handle_photo_message(update, context, agent, postgres_db)
+            return
+        await _handle_text_message(update, context, agent, postgres_db)
+    except Exception as exc:
+        logger.exception("Error handling message: %s", str(exc))
+        try:
+            await update.message.reply_text("Sorry, an error occurred while processing your message.")
+        except Exception:
+            pass
+    finally:
+        reset_log_context(context_token)
+
+
+def _log_incoming_message(update: Update) -> None:
+    message = update.message
+    logger.info(
+        "Handling Telegram message",
+        extra={
+            "event": "telegram_message_received",
+            "message_kind": "photo" if message.photo else "text",
+            "has_caption": bool(message.caption),
+            "text_preview": (message.text or "")[:200],
+        },
+    )
+
+
+def _has_photo(update: Update) -> bool:
+    return bool(update.message and update.message.photo)
+
+
+async def _handle_photo_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    agent: PictoAgent,
+    postgres_db: Optional[PostgresDatabase],
+) -> None:
+    user = update.effective_user.username if update.effective_user else "unknown"
+    logger.info("Processing photo from %s", user)
+    image_path = await _download_photo(update)
+    try:
+        result = agent.process_image(image_path, metadata=_build_photo_metadata(update))
+        logger.info(
+            "Image workflow produced result",
+            extra={
+                "event": "agent_image_result",
+                "task_type": result["task_type"],
+                "analysis": result["analysis"],
+            },
+        )
+        persistence_note = await _persist_photo_result(update, context, postgres_db, result)
+        response = format_result_response(result, persistence_note)
+        await _reply_with_photo_result(update, result, response)
+        _remember_photo_result(context, result)
+        logger.info("Successfully analyzed photo from %s", user)
+    except Exception as exc:
+        logger.error("Failed to analyze image from %s: %s", user, str(exc))
+        await update.message.reply_text(f"Error analyzing image: {exc}")
+    finally:
+        if os.path.exists(image_path):
+            os.unlink(image_path)
+
+
+async def _download_photo(update: Update) -> str:
+    photo = update.message.photo[-1]
+    file = await photo.get_file()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
+        await file.download_to_drive(tmp_file.name)
+        return tmp_file.name
+
+
+def _build_photo_metadata(update: Update) -> dict[str, str]:
+    if not update.message.caption:
+        return {}
+    return {"user_prompt": update.message.caption}
+
+
+async def _persist_photo_result(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    postgres_db: Optional[PostgresDatabase],
+    result: dict,
+) -> str | None:
+    if postgres_db is None or update.effective_user is None:
+        return None
+    return await persist_result(update, context, postgres_db, result)
+
+
+async def _reply_with_photo_result(update: Update, result: dict, response: str) -> None:
+    if result["task_type"] == "nutrition":
+        await update.message.reply_text(response, parse_mode=ParseMode.HTML)
+        return
+    await update.message.reply_text(response)
+
+
+def _remember_photo_result(context: ContextTypes.DEFAULT_TYPE, result: dict) -> None:
+    if result["task_type"] == "nutrition":
+        remember_latest_nutrition_result(context, result)
+        return
+    clear_latest_nutrition_result(context)
+
+
+async def _handle_text_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    agent: PictoAgent,
+    postgres_db: Optional[PostgresDatabase],
+) -> None:
+    incoming_text = update.message.text or ""
+    if postgres_db is not None and update.effective_user is not None:
+        if await handle_pending_vocabulary_review(update, context, postgres_db, incoming_text):
+            return
+
+    if await try_apply_latest_nutrition_correction(update, context, agent, postgres_db, incoming_text):
+        return
+
+    await _handle_standard_text_message(update, context, agent, postgres_db, incoming_text)
+
+
+async def _handle_standard_text_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    agent: PictoAgent,
+    postgres_db: Optional[PostgresDatabase],
+    incoming_text: str,
+) -> None:
+    result = agent.process_text(
+        incoming_text,
+        metadata={"recent_history": get_recent_history(context)},
+    )
+    logger.info(
+        "Text workflow produced result",
+        extra={
+            "event": "agent_text_result",
+            "workflow_type": result["workflow_type"],
+            "explanation": result.get("explanation"),
+            "sql_query": result.get("sql_query"),
+        },
+    )
+    await _handle_text_workflow_result(update, context, postgres_db, incoming_text, result)
+
+
+async def _handle_text_workflow_result(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    postgres_db: Optional[PostgresDatabase],
+    incoming_text: str,
+    result: dict,
+) -> None:
+    workflow_type = result["workflow_type"]
+    if workflow_type == "echo":
+        await _handle_echo_workflow(update, context, incoming_text)
+        return
+    if workflow_type == "vocabulary":
+        await _handle_vocabulary_workflow(update, context, postgres_db, incoming_text, result)
+        return
+    if workflow_type == "recipe_collection":
+        await _handle_recipe_collection_workflow(update, context, postgres_db, incoming_text, result)
+        return
+    await _handle_query_workflow(update, context, postgres_db, incoming_text, result)
+
+
+async def _handle_echo_workflow(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    incoming_text: str,
+) -> None:
+    await update.message.reply_text(incoming_text)
+    remember_text_turn(context, incoming_text, [incoming_text], workflow_type="echo")
+
+
+async def _handle_vocabulary_workflow(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    postgres_db: Optional[PostgresDatabase],
+    incoming_text: str,
+    result: dict,
+) -> None:
+    response = result["assistant_reply"]
+    if result.get("store_vocabulary") and postgres_db is not None:
+        user_id = await resolve_user_id(update, context, postgres_db)
+        await postgres_db.store_vocabulary(
+            user_id,
+            result["french_word"],
+            result["english_description"],
+        )
+        response = format_vocabulary_response(response, "Saved to your vocabulary.")
+        logger.info(
+            "Stored vocabulary workflow result",
+            extra={
+                "event": "agent_vocabulary_stored",
+                "french_word": result.get("french_word"),
+            },
+        )
+    await update.message.reply_text(response)
+    remember_text_turn(context, incoming_text, [response], workflow_type="vocabulary")
+
+
+async def _handle_recipe_collection_workflow(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    postgres_db: Optional[PostgresDatabase],
+    incoming_text: str,
+    result: dict,
+) -> None:
+    if postgres_db is None:
+        message = "Recipe collection storage is not available right now."
+        await update.message.reply_text(message)
+        remember_text_turn(context, incoming_text, [message], workflow_type="recipe_collection")
+        return
+
+    user_id = await resolve_user_id(update, context, postgres_db)
+    await postgres_db.store_dish(
+        user_id,
+        RecipeAnalysis.model_validate({field_name: result.get(field_name) for field_name in RECIPE_ANALYSIS_FIELDS}),
+    )
+    response = format_recipe_response(result, "Recipe added to your collection.")
+    await update.message.reply_text(response)
+    remember_text_turn(context, incoming_text, [response], workflow_type="recipe_collection")
+
+
+async def _handle_query_workflow(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    postgres_db: Optional[PostgresDatabase],
+    incoming_text: str,
+    result: dict,
+) -> None:
+    if postgres_db is None:
+        message = "Database-backed questions are not available right now."
+        await update.message.reply_text(message)
+        remember_text_turn(context, incoming_text, [message], workflow_type=result["workflow_type"])
+        return
+
+    await update.message.reply_text(result["explanation"])
+    user_id = await resolve_user_id(update, context, postgres_db)
+    rows = await postgres_db.execute_guarded_query(
+        result["sql_query"],
+        user_id,
+        QUERY_ALLOWED_TABLES[result["workflow_type"]],
+    )
+    logger.info(
+        "Query workflow returned rows",
+        extra={"event": "agent_query_rows", "rows": rows, "workflow_type": result["workflow_type"]},
+    )
+
+    response_messages = [result["explanation"]]
+    if len(rows) <= 1:
+        response_messages.append(format_query_response(result, rows[0] if rows else {}))
+    else:
+        response_messages.append(format_multirow_query_response(result, rows))
+
+    await update.message.reply_text(response_messages[-1])
+    remember_text_turn(context, incoming_text, response_messages, workflow_type=result["workflow_type"])
