@@ -63,6 +63,26 @@ def _describe_update(update: Update) -> str:
     return "message_other"
 
 
+def _extract_update_debug_fields(update: Update) -> dict[str, Any]:
+    message = update.message
+    text = message.text if message is not None else None
+    entities = message.entities if message is not None else None
+    command = None
+    if entities and text:
+        for entity in entities:
+            if entity.type == "bot_command" and entity.offset == 0:
+                command = text[: entity.length]
+                break
+
+    return {
+        "chat_id": message.chat_id if message is not None else None,
+        "message_id": message.message_id if message is not None else None,
+        "has_text": bool(text),
+        "text_preview": text[:80] if text else None,
+        "command": command,
+    }
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage startup and shutdown of the bot application."""
@@ -171,7 +191,9 @@ async def _process_telegram_webhook(
                 extra={
                     "event": "telegram_webhook_received",
                     "update_kind": _describe_update(update),
+                    "bot_route": action,
                     "payload_keys": sorted(payload.keys()),
+                    **_extract_update_debug_fields(update),
                 },
             )
 

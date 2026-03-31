@@ -33,5 +33,20 @@ if [[ "$BASE_URL" == "https://api.trycloudflare.com" ]]; then
   exit 1
 fi
 
-curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
-  -d "url=${BASE_URL}/webhook/telegram"
+MAIN_RESPONSE="$(curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+  -d "url=${BASE_URL}/webhook/telegram")"
+echo "Main bot: $MAIN_RESPONSE"
+
+if ! grep -q '"ok":true' <<<"$MAIN_RESPONSE"; then
+  exit 1
+fi
+
+if [[ -n "${VOCAB_TELEGRAM_BOT_TOKEN:-}" ]]; then
+  VOCAB_RESPONSE="$(curl -fsS -X POST "https://api.telegram.org/bot${VOCAB_TELEGRAM_BOT_TOKEN}/setWebhook" \
+    -d "url=${BASE_URL}/webhook/telegram/vocabulary")"
+  echo "Vocab bot: $VOCAB_RESPONSE"
+
+  if ! grep -q '"ok":true' <<<"$VOCAB_RESPONSE"; then
+    exit 1
+  fi
+fi

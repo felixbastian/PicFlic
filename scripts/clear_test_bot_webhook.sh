@@ -20,4 +20,10 @@ if [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]]; then
   exit 1
 fi
 
-curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook"
+MAIN_RESPONSE="$(curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook")"
+echo "Main bot: $MAIN_RESPONSE"
+
+if [[ -n "${VOCAB_TELEGRAM_BOT_TOKEN:-}" ]]; then
+  VOCAB_RESPONSE="$(curl -fsS -X POST "https://api.telegram.org/bot${VOCAB_TELEGRAM_BOT_TOKEN}/deleteWebhook")"
+  echo "Vocab bot: $VOCAB_RESPONSE"
+fi

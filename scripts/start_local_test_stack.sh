@@ -35,6 +35,11 @@ if [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]]; then
   exit 1
 fi
 
+VOCAB_BOT_ENABLED="0"
+if [[ -n "${VOCAB_TELEGRAM_BOT_TOKEN:-}" ]]; then
+  VOCAB_BOT_ENABLED="1"
+fi
+
 PROXY_PID=""
 APP_PID=""
 TUNNEL_PID=""
@@ -136,6 +141,27 @@ wait_for_tunnel_url() {
     sleep 1
   done
 
+  return 1
+}
+
+wait_for_webhook_info() {
+  local token="$1"
+  local expected_url="$2"
+  local label="$3"
+  local webhook_info_url="https://api.telegram.org/bot${token}/getWebhookInfo"
+  local webhook_info=""
+
+  for _ in $(seq 1 "$TUNNEL_WAIT_SECONDS"); do
+    webhook_info="$(curl -fsS "$webhook_info_url" || true)"
+    if grep -q '"ok":true' <<<"$webhook_info" && grep -q "\"url\":\"${expected_url//\//\\/}\"" <<<"$webhook_info"; then
+      echo "$label webhook info: $webhook_info"
+      return 0
+    fi
+    sleep 1
+  done
+
+  webhook_info="$(curl -fsS "$webhook_info_url" || true)"
+  echo "$label webhook info: $webhook_info"
   return 1
 }
 
@@ -311,27 +337,31 @@ fi
 
 if [[ "$SKIP_WEBHOOK_SETUP" != "1" ]]; then
   echo "Setting Telegram webhook to $PUBLIC_URL/webhook/telegram"
-  WEBHOOK_RESPONSE="$(ENV_FILE="$ENV_FILE" ./scripts/set_test_bot_webhook.sh "$PUBLIC_URL")"
-  echo "$WEBHOOK_RESPONSE"
-  if ! grep -q '"ok":true' <<<"$WEBHOOK_RESPONSE"; then
+  if [[ "$VOCAB_BOT_ENABLED" == "1" ]]; then
+    echo "Setting vocabulary Telegram webhook to $PUBLIC_URL/webhook/telegram/vocabulary"
+  fi
+  if ! WEBHOOK_RESPONSE="$(ENV_FILE="$ENV_FILE" ./scripts/set_test_bot_webhook.sh "$PUBLIC_URL")"; then
     FAILED="1"
     echo "Telegram did not accept the webhook."
     exit 1
   fi
+  echo "$WEBHOOK_RESPONSE"
 
-  WEBHOOK_INFO_URL="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo"
-  for _ in $(seq 1 "$TUNNEL_WAIT_SECONDS"); do
-    WEBHOOK_INFO="$(curl -fsS "$WEBHOOK_INFO_URL" || true)"
-    if grep -q '"ok":true' <<<"$WEBHOOK_INFO" && grep -q "\"url\":\"${PUBLIC_URL//\//\\/}/webhook/telegram\"" <<<"$WEBHOOK_INFO"; then
-      if ! grep -q '"pending_update_count":[1-9]' <<<"$WEBHOOK_INFO"; then
-        break
-      fi
+  if ! wait_for_webhook_info "$TELEGRAM_BOT_TOKEN" "$PUBLIC_URL/webhook/telegram" "Main bot"; then
+    FAILED="1"
+    echo "Main bot webhook was not confirmed by Telegram."
+    exit 1
+  fi
+
+  if [[ "$VOCAB_BOT_ENABLED" == "1" ]]; then
+    if ! wait_for_webhook_info "$VOCAB_TELEGRAM_BOT_TOKEN" "$PUBLIC_URL/webhook/telegram/vocabulary" "Vocab bot"; then
+      FAILED="1"
+      echo "Vocabulary bot webhook was not confirmed by Telegram."
+      exit 1
     fi
-    sleep 1
-  done
-
-  WEBHOOK_INFO="$(curl -fsS "$WEBHOOK_INFO_URL" || true)"
-  echo "$WEBHOOK_INFO"
+  else
+    echo "Vocabulary bot webhook setup skipped because VOCAB_TELEGRAM_BOT_TOKEN is not configured in $ENV_FILE"
+  fi
 else
   echo "Skipping Telegram webhook setup because SKIP_WEBHOOK_SETUP=1"
 fi
@@ -341,7 +371,10 @@ echo "Local test stack is running."
 echo "Tunnel provider: $ACTIVE_TUNNEL_PROVIDER"
 echo "Public URL: $PUBLIC_URL"
 if [[ "$SKIP_WEBHOOK_SETUP" != "1" ]]; then
-  echo "Webhook URL: $PUBLIC_URL/webhook/telegram"
+  echo "Main webhook URL: $PUBLIC_URL/webhook/telegram"
+  if [[ "$VOCAB_BOT_ENABLED" == "1" ]]; then
+    echo "Vocab webhook URL: $PUBLIC_URL/webhook/telegram/vocabulary"
+  fi
 fi
 echo
 echo "Logs:"
