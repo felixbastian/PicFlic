@@ -87,14 +87,19 @@ def get_next_review_label(stage: VocabularyReviewStage | None) -> str | None:
     return _STAGE_LABELS[stage]
 
 
-def build_review_prompt(review: DueVocabularyReview) -> str:
-    """Build the outbound Telegram prompt for a due vocabulary review."""
+def build_review_prompt_text(english_description: str) -> str:
+    """Build the outbound Telegram prompt body for a vocabulary review."""
     return (
         "Vocabulary review:\n"
-        f"What is the French word for:\n{review.english_description}\n\n"
+        f"What is the French word for:\n{english_description}\n\n"
         "Reply with the French word. Reply 'p' or 'pass' to count it as wrong right away. "
         "Reply 'shelf' if you want me to stop reviewing this word."
     )
+
+
+def build_review_prompt(review: DueVocabularyReview) -> str:
+    """Build the outbound Telegram prompt for a due vocabulary review."""
+    return build_review_prompt_text(review.english_description)
 
 
 def build_review_response(
