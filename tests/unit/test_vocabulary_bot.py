@@ -171,7 +171,8 @@ def test_handle_message_processes_review_in_separate_bot_and_dispatches_next_due
             "text": (
                 "Vocabulary review:\n"
                 "What is the French word for:\ncheese\n\n"
-                "Reply with the French word. Reply 'shelf' if you want me to stop reviewing this word."
+                "Reply with the French word. Reply 'p' or 'pass' to count it as wrong right away. "
+                "Reply 'shelf' if you want me to stop reviewing this word."
             ),
         }
     ]
@@ -233,7 +234,8 @@ def test_dispatch_due_vocabulary_reviews_sends_one_prompt_per_due_review():
             "text": (
                 "Vocabulary review:\n"
                 "What is the French word for:\nhello; a common French greeting.\n\n"
-                "Reply with the French word. Reply 'shelf' if you want me to stop reviewing this word."
+                "Reply with the French word. Reply 'p' or 'pass' to count it as wrong right away. "
+                "Reply 'shelf' if you want me to stop reviewing this word."
             ),
         }
     ]

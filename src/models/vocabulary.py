@@ -59,3 +59,12 @@ class VocabularyReviewResult(BaseModel):
     finished: bool
     current_review_stage: VocabularyReviewStage | None
     next_review_at: datetime | None
+
+
+class VocabularySynonymHint(BaseModel):
+    """Decision for giving the user a second chance on a synonym-style answer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    give_second_chance: bool
+    distinction: str | None = None
