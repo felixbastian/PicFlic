@@ -1,4 +1,4 @@
-from src.agent import PictoAgent
+from src.agents.main_agent import MainAgent as PictoAgent
 from src.db import SqliteDatabase
 from src.models import (
     ExpenseAnalysis,
@@ -61,10 +61,10 @@ def _mock_recipe_analysis(image_path: str, metadata: dict | None = None) -> Reci
 
 def test_process_image_routes_to_nutrition_and_stores_record(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "src.agent.route_image_task",
+        "src.agents.main_agent.route_image_task",
         lambda image_path, metadata=None: RoutingDecision(task_type="nutrition"),
     )
-    monkeypatch.setattr("src.agent.analyze_nutrition_image", _mock_nutrition_analysis)
+    monkeypatch.setattr("src.agents.main_agent.analyze_nutrition_image", _mock_nutrition_analysis)
     db = SqliteDatabase(tmp_path / "records.db")
     agent = PictoAgent(db)
 
@@ -83,10 +83,10 @@ def test_process_image_routes_to_nutrition_and_stores_record(tmp_path, monkeypat
 
 def test_process_image_routes_to_expense_and_stores_record(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "src.agent.route_image_task",
+        "src.agents.main_agent.route_image_task",
         lambda image_path, metadata=None: RoutingDecision(task_type="expense"),
     )
-    monkeypatch.setattr("src.agent.analyze_expense_receipt", _mock_expense_analysis)
+    monkeypatch.setattr("src.agents.main_agent.analyze_expense_receipt", _mock_expense_analysis)
     db = SqliteDatabase(tmp_path / "records.db")
     agent = PictoAgent(db)
 
@@ -104,10 +104,10 @@ def test_process_image_routes_to_expense_and_stores_record(tmp_path, monkeypatch
 
 def test_get_record_by_id(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "src.agent.route_image_task",
+        "src.agents.main_agent.route_image_task",
         lambda image_path, metadata=None: RoutingDecision(task_type="nutrition"),
     )
-    monkeypatch.setattr("src.agent.analyze_nutrition_image", _mock_nutrition_analysis)
+    monkeypatch.setattr("src.agents.main_agent.analyze_nutrition_image", _mock_nutrition_analysis)
     db = SqliteDatabase(tmp_path / "records.db")
     agent = PictoAgent(db)
 
@@ -123,10 +123,10 @@ def test_get_record_by_id(tmp_path, monkeypatch):
 
 def test_update_nutrition_record_replaces_existing_analysis(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "src.agent.route_image_task",
+        "src.agents.main_agent.route_image_task",
         lambda image_path, metadata=None: RoutingDecision(task_type="nutrition"),
     )
-    monkeypatch.setattr("src.agent.analyze_nutrition_image", _mock_nutrition_analysis)
+    monkeypatch.setattr("src.agents.main_agent.analyze_nutrition_image", _mock_nutrition_analysis)
     db = SqliteDatabase(tmp_path / "records.db")
     agent = PictoAgent(db)
 
@@ -152,10 +152,10 @@ def test_update_nutrition_record_replaces_existing_analysis(tmp_path, monkeypatc
 
 def test_process_image_routes_to_recipe_and_stores_record(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "src.agent.route_image_task",
+        "src.agents.main_agent.route_image_task",
         lambda image_path, metadata=None: RoutingDecision(task_type="recipe"),
     )
-    monkeypatch.setattr("src.agent.analyze_recipe_image", _mock_recipe_analysis)
+    monkeypatch.setattr("src.agents.main_agent.analyze_recipe_image", _mock_recipe_analysis)
     db = SqliteDatabase(tmp_path / "records.db")
     agent = PictoAgent(db)
 
@@ -194,7 +194,7 @@ def test_image_record_omits_item_count_from_persisted_nutrition_payload():
 
 def test_process_text_routes_to_echo(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "src.agent.route_text_workflow",
+        "src.agents.main_agent.route_text_workflow",
         lambda text, metadata=None: TextRoutingDecision(workflow_type="echo"),
     )
     agent = PictoAgent(SqliteDatabase(tmp_path / "records.db"))
@@ -206,11 +206,11 @@ def test_process_text_routes_to_echo(tmp_path, monkeypatch):
 
 def test_process_text_routes_to_expense_query(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "src.agent.route_text_workflow",
+        "src.agents.main_agent.route_text_workflow",
         lambda text, metadata=None: TextRoutingDecision(workflow_type="expense_query"),
     )
     monkeypatch.setattr(
-        "src.agent.build_expense_query_plan",
+        "src.agents.main_agent.build_expense_query_plan",
         lambda text, metadata=None: SQLQueryPlan(
             workflow_type="expense_query",
             explanation='I am looking for all expenses in the category "Lebensmitteleinkäufe" for January 2026.',
@@ -236,11 +236,11 @@ def test_process_text_routes_to_expense_query(tmp_path, monkeypatch):
 
 def test_process_text_routes_to_nutrition_query(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "src.agent.route_text_workflow",
+        "src.agents.main_agent.route_text_workflow",
         lambda text, metadata=None: TextRoutingDecision(workflow_type="nutrition_query"),
     )
     monkeypatch.setattr(
-        "src.agent.build_nutrition_query_plan",
+        "src.agents.main_agent.build_nutrition_query_plan",
         lambda text, metadata=None: SQLQueryPlan(
             workflow_type="nutrition_query",
             explanation="I am looking for all tracked calories in March 2026.",
@@ -266,11 +266,11 @@ def test_process_text_routes_to_nutrition_query(tmp_path, monkeypatch):
 
 def test_process_text_routes_to_vocabulary(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "src.agent.route_text_workflow",
+        "src.agents.main_agent.route_text_workflow",
         lambda text, metadata=None: TextRoutingDecision(workflow_type="vocabulary"),
     )
     monkeypatch.setattr(
-        "src.agent.build_vocabulary_response",
+        "src.agents.main_agent.build_vocabulary_response",
         lambda text, metadata=None: VocabularyWorkflowResult(
             workflow_type="vocabulary",
             assistant_reply="Bonjour means hello. It is a common French greeting.",
@@ -291,11 +291,11 @@ def test_process_text_routes_to_vocabulary(tmp_path, monkeypatch):
 
 def test_process_text_routes_to_recipe_collection(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "src.agent.route_text_workflow",
+        "src.agents.main_agent.route_text_workflow",
         lambda text, metadata=None: TextRoutingDecision(workflow_type="recipe_collection"),
     )
     monkeypatch.setattr(
-        "src.agent.build_recipe_collection_response",
+        "src.agents.main_agent.build_recipe_collection_response",
         lambda text, metadata=None: RecipeCollectionResult(
             workflow_type="recipe_collection",
             name="Lemon pasta",

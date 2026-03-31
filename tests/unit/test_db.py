@@ -111,6 +111,21 @@ def test_get_daily_calories_sums_today_for_user():
     assert params == ("user-123",)
 
 
+def test_has_vocab_bot_activated_reads_flag():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+    db._pool.connection.fetchval_result = True
+
+    activated = asyncio.run(db.has_vocab_bot_activated("user-123"))
+
+    assert activated is True
+    calls = db._pool.connection.fetchval_calls
+    assert len(calls) == 1
+    query, params = calls[0]
+    assert "has_vocab_bot_activated" in query
+    assert params == ("user-123",)
+
+
 def test_update_consumption_updates_fact_row():
     db = PostgresDatabase()
     db._pool = _FakePool()

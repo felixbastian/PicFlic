@@ -11,11 +11,12 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from ..agent import PictoAgent
+from ..agents import MainAgent
+from ..config import load_config
 from ..db import PostgresDatabase
 from ..logging_context import bind_log_context, generate_process_id, get_log_context, reset_log_context
 from ..models import RecipeAnalysis
-from .constants import QUERY_ALLOWED_TABLES, RECIPE_ANALYSIS_FIELDS, WELCOME_MESSAGE
+from .constants import QUERY_ALLOWED_TABLES, RECIPE_ANALYSIS_FIELDS, VOCAB_BOT_LINK_FALLBACK, WELCOME_MESSAGE
 from .corrections import try_apply_latest_nutrition_correction
 from .formatting import (
     format_multirow_query_response,
@@ -25,7 +26,6 @@ from .formatting import (
     format_vocabulary_response,
 )
 from .persistence import persist_result, resolve_user_id
-from .reviews import handle_pending_vocabulary_review
 from .state import (
     clear_latest_nutrition_result,
     get_recent_history,
@@ -44,7 +44,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def handle_message(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    agent: PictoAgent,
+    agent: MainAgent,
     postgres_db: Optional[PostgresDatabase] = None,
 ) -> None:
     """Handle incoming Telegram messages."""
@@ -90,7 +90,7 @@ def _has_photo(update: Update) -> bool:
 async def _handle_photo_message(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    agent: PictoAgent,
+    agent: MainAgent,
     postgres_db: Optional[PostgresDatabase],
 ) -> None:
     user = update.effective_user.username if update.effective_user else "unknown"
@@ -161,14 +161,10 @@ def _remember_photo_result(context: ContextTypes.DEFAULT_TYPE, result: dict) -> 
 async def _handle_text_message(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    agent: PictoAgent,
+    agent: MainAgent,
     postgres_db: Optional[PostgresDatabase],
 ) -> None:
     incoming_text = update.message.text or ""
-    if postgres_db is not None and update.effective_user is not None:
-        if await handle_pending_vocabulary_review(update, context, postgres_db, incoming_text):
-            return
-
     if await try_apply_latest_nutrition_correction(update, context, agent, postgres_db, incoming_text):
         return
 
@@ -178,7 +174,7 @@ async def _handle_text_message(
 async def _handle_standard_text_message(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    agent: PictoAgent,
+    agent: MainAgent,
     postgres_db: Optional[PostgresDatabase],
     incoming_text: str,
 ) -> None:
@@ -237,19 +233,29 @@ async def _handle_vocabulary_workflow(
     response = result["assistant_reply"]
     if result.get("store_vocabulary") and postgres_db is not None:
         user_id = await resolve_user_id(update, context, postgres_db)
-        await postgres_db.store_vocabulary(
-            user_id,
-            result["french_word"],
-            result["english_description"],
-        )
-        response = format_vocabulary_response(response, "Saved to your vocabulary.")
-        logger.info(
-            "Stored vocabulary workflow result",
-            extra={
-                "event": "agent_vocabulary_stored",
-                "french_word": result.get("french_word"),
-            },
-        )
+        if await postgres_db.has_vocab_bot_activated(user_id):
+            await postgres_db.store_vocabulary(
+                user_id,
+                result["french_word"],
+                result["english_description"],
+            )
+            response = format_vocabulary_response(
+                response,
+                "Saved to your vocabulary. Reviews will arrive in the separate vocabulary bot.",
+            )
+            logger.info(
+                "Stored vocabulary workflow result",
+                extra={
+                    "event": "agent_vocabulary_stored",
+                    "french_word": result.get("french_word"),
+                },
+            )
+        else:
+            response = format_vocabulary_response(response, _build_vocab_bot_activation_note())
+            logger.info(
+                "Vocabulary bot activation required before saving word",
+                extra={"event": "agent_vocabulary_activation_required", "user_id": user_id},
+            )
     await update.message.reply_text(response)
     remember_text_turn(context, incoming_text, [response], workflow_type="vocabulary")
 
@@ -310,3 +316,12 @@ async def _handle_query_workflow(
 
     await update.message.reply_text(response_messages[-1])
     remember_text_turn(context, incoming_text, response_messages, workflow_type=result["workflow_type"])
+
+
+def _build_vocab_bot_activation_note() -> str:
+    config = load_config()
+    vocab_bot_link = config.vocab_bot_link or VOCAB_BOT_LINK_FALLBACK
+    return (
+        "To save and review vocabulary, first activate the separate vocabulary bot: "
+        f"{vocab_bot_link}\n\nOpen the link, press Start, and then send me the word again."
+    )

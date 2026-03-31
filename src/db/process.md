@@ -22,3 +22,4 @@ psql -h 127.0.0.1 -U app_user -d app_db -f src/db/migrations/005_init_schema.sql
 psql -h 127.0.0.1 -U app_user -d app_db -f src/db/migrations/006_edit_schema.sql
 psql -h 127.0.0.1 -U app_user -d app_db -f src/db/migrations/007_edit_schema.sql
 psql -h 127.0.0.1 -U app_user -d app_db -f src/db/migrations/008_edit_schema.sql
+psql -h 127.0.0.1 -U app_user -d app_db -f src/db/migrations/009_edit_schema.sql

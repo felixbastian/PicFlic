@@ -6,7 +6,6 @@ import pytest
 from telegram.constants import ParseMode
 
 from src.bot import (
-    dispatch_due_vocabulary_reviews,
     format_multirow_query_response,
     format_query_response,
     format_result_response,
@@ -20,6 +19,7 @@ from src.bot import (
     resolve_user_id,
     start,
 )
+from src.config import AppConfig
 from src.logging_context import clear_log_context, get_log_context
 from src.models import (
     DueVocabularyReview,
@@ -113,6 +113,7 @@ class _FakePostgresDatabase:
         self.query_calls: list[dict] = []
         self.mark_prompted_calls: list[str] = []
         self.record_review_calls: list[dict] = []
+        self.vocab_bot_activated = True
         self.query_result = [
             {
                 "result_value": Decimal("42.50"),
@@ -157,6 +158,9 @@ class _FakePostgresDatabase:
             }
         )
         return "vocabulary-123"
+
+    async def has_vocab_bot_activated(self, user_id: str) -> bool:
+        return self.vocab_bot_activated
 
     async def get_daily_calories(self, user_id: str) -> int:
         self.daily_calories_calls.append(user_id)
@@ -755,15 +759,64 @@ def test_handle_message_stores_new_vocabulary_entry():
         }
     ]
     assert message.replies == [
-        "Bonjour means hello. It is a common greeting in French.\n\nSaved to your vocabulary."
+        "Bonjour means hello. It is a common greeting in French.\n\n"
+        "Saved to your vocabulary. Reviews will arrive in the separate vocabulary bot."
     ]
     assert get_recent_history(context) == [
         {"role": "user", "text": "bonjour", "workflow": "vocabulary"},
         {
             "role": "assistant",
-            "text": "Bonjour means hello. It is a common greeting in French.\n\nSaved to your vocabulary.",
+            "text": (
+                "Bonjour means hello. It is a common greeting in French.\n\n"
+                "Saved to your vocabulary. Reviews will arrive in the separate vocabulary bot."
+            ),
             "workflow": "vocabulary",
         },
+    ]
+
+
+def test_handle_message_requires_vocab_bot_activation_before_storing(monkeypatch):
+    message = _FakeMessage()
+    message.photo = []
+    message.text = "bonjour"
+    agent = _FakeAgent(
+        text_result={
+            "workflow_type": "vocabulary",
+            "assistant_reply": "Bonjour means hello. It is a common greeting in French.",
+            "store_vocabulary": True,
+            "french_word": "bonjour",
+            "english_description": "hello; a common French greeting used when meeting someone.",
+        }
+    )
+    update = SimpleNamespace(
+        update_id=1016,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
+    postgres_db = _FakePostgresDatabase()
+    postgres_db.vocab_bot_activated = False
+    monkeypatch.setattr(
+        "src.bot.handlers.load_config",
+        lambda: AppConfig(
+            openai_api_key="test-key",
+            vocab_bot_username="VocabTrainBot",
+        ),
+    )
+
+    asyncio.run(handle_message(update, context, agent, postgres_db))
+
+    assert postgres_db.vocabulary_calls == []
+    assert message.replies == [
+        "Bonjour means hello. It is a common greeting in French.\n\n"
+        "To save and review vocabulary, first activate the separate vocabulary bot: "
+        "https://t.me/VocabTrainBot\n\n"
+        "Open the link, press Start, and then send me the word again."
     ]
 
 
@@ -865,7 +918,7 @@ def test_handle_message_answers_vocabulary_follow_up_without_storing_again():
     assert message.replies == ['Example: "Bonjour, comment vas-tu ?" means "Hello, how are you?"']
 
 
-def test_handle_message_treats_pending_review_answer_as_review_flow():
+def test_handle_message_does_not_treat_pending_review_as_main_bot_flow():
     message = _FakeMessage()
     message.photo = []
     message.text = "Bonjor"
@@ -880,8 +933,7 @@ def test_handle_message_treats_pending_review_answer_as_review_flow():
         ),
         message=message,
     )
-    context = SimpleNamespace(application=_FakeApplication(), user_data={})
-    context.application.bot_data = {}
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
     postgres_db = _FakePostgresDatabase()
     postgres_db.pending_review = DueVocabularyReview(
         vocabulary_id="vocab-1",
@@ -895,104 +947,9 @@ def test_handle_message_treats_pending_review_answer_as_review_flow():
 
     asyncio.run(handle_message(update, context, agent, postgres_db))
 
-    assert agent.text_calls == []
-    assert postgres_db.record_review_calls == [
-        {"vocabulary_id": "vocab-1", "correct": True, "shelved": False}
-    ]
-    assert message.replies == ['Correct. The French word is "bonjour". I will ask you again in 3 days.']
-    assert context.application.bot.sent_messages == []
-
-
-def test_handle_message_shelves_pending_review():
-    message = _FakeMessage()
-    message.photo = []
-    message.text = "please shelf this one"
-    agent = _FakeAgent(text_result={"workflow_type": "echo"})
-    update = SimpleNamespace(
-        update_id=1019,
-        effective_user=SimpleNamespace(
-            id=42,
-            username="felix",
-            first_name="Felix",
-            last_name="Hans",
-        ),
-        message=message,
-    )
-    context = SimpleNamespace(application=_FakeApplication(), user_data={})
-    context.application.bot_data = {}
-    postgres_db = _FakePostgresDatabase()
-    postgres_db.pending_review = DueVocabularyReview(
-        vocabulary_id="vocab-2",
-        user_id="user-123",
-        telegram_user_id=42,
-        french_word="fromage",
-        english_description="cheese",
-        current_review_stage="week",
-        next_review_at="2026-03-29T10:00:00",
-    )
-
-    asyncio.run(handle_message(update, context, agent, postgres_db))
-
-    assert postgres_db.record_review_calls == [
-        {"vocabulary_id": "vocab-2", "correct": False, "shelved": True}
-    ]
-    assert message.replies == ['Okay, I shelved "fromage". I will stop asking you this word.']
-    assert context.application.bot.sent_messages == []
-
-
-def test_handle_message_sends_next_due_review_immediately_after_answer():
-    message = _FakeMessage()
-    message.photo = []
-    message.text = "Bonjor"
-    agent = _FakeAgent(text_result={"workflow_type": "echo"})
-    update = SimpleNamespace(
-        update_id=1020,
-        effective_user=SimpleNamespace(
-            id=42,
-            username="felix",
-            first_name="Felix",
-            last_name="Hans",
-        ),
-        message=message,
-    )
-    context = SimpleNamespace(application=_FakeApplication(), user_data={})
-    context.application.bot_data = {}
-    postgres_db = _FakePostgresDatabase()
-    postgres_db.pending_review = DueVocabularyReview(
-        vocabulary_id="vocab-1",
-        user_id="user-123",
-        telegram_user_id=42,
-        french_word="bonjour",
-        english_description="hello; a common French greeting.",
-        current_review_stage="day",
-        next_review_at="2026-03-23T10:00:00",
-    )
-    postgres_db.due_reviews = [
-        DueVocabularyReview(
-            vocabulary_id="vocab-2",
-            user_id="user-123",
-            telegram_user_id=42,
-            french_word="fromage",
-            english_description="cheese",
-            current_review_stage="week",
-            next_review_at="2026-03-23T10:05:00",
-        )
-    ]
-
-    asyncio.run(handle_message(update, context, agent, postgres_db))
-
-    assert message.replies == ['Correct. The French word is "bonjour". I will ask you again in 3 days.']
-    assert context.application.bot.sent_messages == [
-        {
-            "chat_id": 42,
-            "text": (
-                "Vocabulary review:\n"
-                "What is the French word for:\ncheese\n\n"
-                "Reply with the French word. Reply 'shelf' if you want me to stop reviewing this word."
-            ),
-        }
-    ]
-    assert postgres_db.mark_prompted_calls == ["vocab-2"]
+    assert len(agent.text_calls) == 1
+    assert postgres_db.record_review_calls == []
+    assert message.replies == ["Bonjor"]
 
 
 def test_handle_message_reports_query_unavailable_without_postgres():
@@ -1383,33 +1340,3 @@ def test_remember_text_turn_keeps_recent_history_compact():
         },
     ]
 
-
-def test_dispatch_due_vocabulary_reviews_sends_one_prompt_per_due_review():
-    application = _FakeApplication()
-    postgres_db = _FakePostgresDatabase()
-    postgres_db.due_reviews = [
-        DueVocabularyReview(
-            vocabulary_id="vocab-1",
-            user_id="user-123",
-            telegram_user_id=42,
-            french_word="bonjour",
-            english_description="hello; a common French greeting.",
-            current_review_stage="day",
-            next_review_at="2026-03-23T10:00:00",
-        )
-    ]
-
-    sent_count = asyncio.run(dispatch_due_vocabulary_reviews(application, postgres_db))
-
-    assert sent_count == 1
-    assert application.bot.sent_messages == [
-        {
-            "chat_id": 42,
-            "text": (
-                "Vocabulary review:\n"
-                "What is the French word for:\nhello; a common French greeting.\n\n"
-                "Reply with the French word. Reply 'shelf' if you want me to stop reviewing this word."
-            ),
-        }
-    ]
-    assert postgres_db.mark_prompted_calls == ["vocab-1"]

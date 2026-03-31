@@ -18,6 +18,8 @@ class AppConfig:
     openai_model: str = "gpt-5"
     database_path: Path = DEFAULT_DATABASE_PATH
     telegram_token: str | None = None
+    vocab_telegram_token: str | None = None
+    vocab_bot_username: str = "VocabTrainBot"
     db_user: str | None = None
     db_password: str | None = None
     db_name: str | None = None
@@ -29,6 +31,10 @@ class AppConfig:
     @property
     def postgres_enabled(self) -> bool:
         return bool(self.db_user and self.db_name and (self.db_host or self.instance_connection_name))
+
+    @property
+    def vocab_bot_link(self) -> str:
+        return f"https://t.me/{self.vocab_bot_username}"
 
 
 @lru_cache(maxsize=1)
@@ -45,6 +51,11 @@ def load_config(env_file: str | Path = DEFAULT_ENV_FILE) -> AppConfig:
             or env_values.get("PICTOAGENT_DATABASE_PATH")
         ),
         telegram_token=os.getenv("TELEGRAM_BOT_TOKEN") or env_values.get("TELEGRAM_BOT_TOKEN"),
+        vocab_telegram_token=os.getenv("VOCAB_TELEGRAM_BOT_TOKEN")
+        or env_values.get("VOCAB_TELEGRAM_BOT_TOKEN"),
+        vocab_bot_username=os.getenv("VOCAB_TELEGRAM_BOT_USERNAME")
+        or env_values.get("VOCAB_TELEGRAM_BOT_USERNAME")
+        or "VocabTrainBot",
         db_user=os.getenv("DB_USER") or env_values.get("DB_USER"),
         db_password=os.getenv("DB_PASSWORD") or env_values.get("DB_PASSWORD"),
         db_name=os.getenv("DB_NAME") or env_values.get("DB_NAME"),

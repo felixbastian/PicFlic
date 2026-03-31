@@ -10,7 +10,7 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from ..agent import PictoAgent
+from ..agents import MainAgent
 from ..db import PostgresDatabase
 from ..logging_context import bind_log_context
 from .formatting import format_result_response
@@ -37,7 +37,7 @@ def _run_correct_nutrition_analysis(incoming_text: str, latest_analysis: dict, r
 async def try_apply_latest_nutrition_correction(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    agent: PictoAgent,
+    agent: MainAgent,
     postgres_db: Optional[PostgresDatabase],
     incoming_text: str,
 ) -> bool:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Any
@@ -11,13 +10,14 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 from telegram import Update
 
-from . import create_default_agent, load_config
-from .agent import PictoAgent
-from .bot import create_telegram_application, dispatch_due_vocabulary_reviews
+from . import create_default_agent, create_default_vocabulary_agent, load_config
+from .agents import MainAgent
+from .bot import create_telegram_application
 from .models import ImageRecord, NutritionAnalysis
 from .db import PostgresDatabase
 from .logging_config import setup_logging
 from .logging_context import bind_log_context, generate_process_id, reset_log_context
+from .vocab_bot import create_vocabulary_telegram_application, dispatch_due_vocabulary_reviews
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +43,13 @@ def _record_to_response(record: ImageRecord) -> RecordResponse:
     )
 
 
-def get_agent() -> PictoAgent:
+def get_agent() -> MainAgent:
     return create_default_agent()
 
 
 # Initialize bot application on startup
-_bot_application = None
+_main_bot_application = None
+_vocab_bot_application = None
 _db = None
 
 
@@ -68,10 +69,11 @@ async def lifespan(app: FastAPI):
     # Initialize logging
     setup_logging()
     
-    global _bot_application, _db
+    global _main_bot_application, _vocab_bot_application, _db
     # Startup
     config = load_config()
-    agent = create_default_agent()
+    main_agent = create_default_agent()
+    vocabulary_agent = create_default_vocabulary_agent()
     
     if config.postgres_enabled:
         _db = PostgresDatabase.from_config(config)
@@ -82,18 +84,34 @@ async def lifespan(app: FastAPI):
     
     if config.telegram_token:
         logger.info("Creating Telegram application")
-        _bot_application = create_telegram_application(agent, config.telegram_token, _db)
+        _main_bot_application = create_telegram_application(main_agent, config.telegram_token, _db)
         logger.info("Initializing Telegram application")
-        await _bot_application.initialize()
+        await _main_bot_application.initialize()
         logger.info("Telegram application initialized successfully")
     else:
         logger.warning("No telegram token found, bot will not be initialized")
+    if config.vocab_telegram_token:
+        logger.info("Creating vocabulary Telegram application")
+        _vocab_bot_application = create_vocabulary_telegram_application(
+            vocabulary_agent,
+            config.vocab_telegram_token,
+            _db,
+        )
+        logger.info("Initializing vocabulary Telegram application")
+        await _vocab_bot_application.initialize()
+        logger.info("Vocabulary Telegram application initialized successfully")
+    else:
+        logger.warning("No vocabulary telegram token found, vocabulary bot will not be initialized")
     yield
     # Shutdown
-    if _bot_application is not None:
+    if _main_bot_application is not None:
         logger.info("Shutting down Telegram application")
-        await _bot_application.stop()
+        await _main_bot_application.stop()
         logger.info("Telegram application shut down")
+    if _vocab_bot_application is not None:
+        logger.info("Shutting down vocabulary Telegram application")
+        await _vocab_bot_application.stop()
+        logger.info("Vocabulary Telegram application shut down")
     
     if _db is not None:
         await _db.disconnect()
@@ -105,17 +123,47 @@ app = FastAPI(title="PictoAgent API", version="0.1.0", lifespan=lifespan)
 @app.post("/webhook/telegram")
 async def telegram_webhook(payload: dict) -> dict[str, str]:
     """Receive Telegram updates via webhook."""
+    return await _process_telegram_webhook(
+        payload,
+        _main_bot_application,
+        process_prefix="telegram",
+        action="telegram_webhook",
+        preload_main_photo_user=True,
+    )
+
+
+@app.post("/webhook/telegram/vocabulary")
+async def vocabulary_telegram_webhook(payload: dict) -> dict[str, str]:
+    """Receive Telegram updates for the separate vocabulary bot."""
+    return await _process_telegram_webhook(
+        payload,
+        _vocab_bot_application,
+        process_prefix="vocabulary-telegram",
+        action="vocabulary_telegram_webhook",
+        preload_main_photo_user=False,
+    )
+
+
+async def _process_telegram_webhook(
+    payload: dict,
+    application,
+    *,
+    process_prefix: str,
+    action: str,
+    preload_main_photo_user: bool,
+) -> dict[str, str]:
+    """Receive Telegram updates via webhook."""
     try:
-        if _bot_application is None:
+        if application is None:
             logger.error("Bot application not initialized")
             raise HTTPException(status_code=500, detail="Bot not initialized")
 
-        update = Update.de_json(payload, _bot_application.bot)
+        update = Update.de_json(payload, application.bot)
         context_token = bind_log_context(
-            process_id=generate_process_id("telegram"),
+            process_id=generate_process_id(process_prefix),
             telegram_user_id=update.effective_user.id if update.effective_user else None,
             update_id=update.update_id,
-            action="telegram_webhook",
+            action=action,
         )
         try:
             logger.info(
@@ -127,7 +175,7 @@ async def telegram_webhook(payload: dict) -> dict[str, str]:
                 },
             )
 
-            if _db is not None and update.effective_user and update.message and update.message.photo:
+            if preload_main_photo_user and _db is not None and update.effective_user and update.message and update.message.photo:
                 user_id = await _db.get_or_create_user(
                     telegram_user_id=update.effective_user.id,
                     username=update.effective_user.username,
@@ -135,14 +183,14 @@ async def telegram_webhook(payload: dict) -> dict[str, str]:
                     last_name=update.effective_user.last_name,
                 )
                 bind_log_context(user_id=user_id)
-                pending_user_ids = _bot_application.bot_data.setdefault("_picflic_user_ids", {})
+                pending_user_ids = application.bot_data.setdefault("_picflic_user_ids", {})
                 pending_user_ids[update.update_id] = user_id
                 logger.info(
                     "Preloaded warehouse user id for photo webhook",
                     extra={"event": "telegram_user_preloaded"},
                 )
 
-            await _bot_application.process_update(update)
+            await application.process_update(update)
             logger.info(
                 "Processed Telegram webhook",
                 extra={"event": "telegram_webhook_processed", "update_kind": _describe_update(update)},
@@ -163,8 +211,8 @@ async def run_vocabulary_reviews(
     config = load_config()
     if not config.review_job_secret or x_job_secret != config.review_job_secret:
         raise HTTPException(status_code=403, detail="Forbidden")
-    if _bot_application is None or _db is None:
-        raise HTTPException(status_code=500, detail="Bot or database not initialized")
+    if _vocab_bot_application is None or _db is None:
+        raise HTTPException(status_code=500, detail="Vocabulary bot or database not initialized")
 
     context_token = bind_log_context(
         process_id=generate_process_id("vocabulary-review-job"),
@@ -172,7 +220,7 @@ async def run_vocabulary_reviews(
         workflow="vocabulary_review",
     )
     try:
-        sent_count = await dispatch_due_vocabulary_reviews(_bot_application, _db)
+        sent_count = await dispatch_due_vocabulary_reviews(_vocab_bot_application, _db)
         logger.info(
             "Dispatched due vocabulary reviews",
             extra={"event": "vocabulary_review_job_completed", "sent_count": sent_count},
@@ -189,4 +237,5 @@ def health() -> dict[str, str]:
         "status": "ok",
         "database_path": str(config.database_path),
         "postgres_enabled": str(config.postgres_enabled).lower(),
+        "vocab_bot_enabled": str(bool(config.vocab_telegram_token)).lower(),
     }
