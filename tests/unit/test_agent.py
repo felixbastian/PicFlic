@@ -85,6 +85,17 @@ def _mock_revised_nutrition_analysis(
     )
 
 
+def _mock_revised_expense_analysis(
+    correction_text: str,
+    previous_analysis: ExpenseAnalysis | dict,
+) -> ExpenseAnalysis:
+    return ExpenseAnalysis(
+        description="Corrected bakery expense",
+        expense_total_amount_in_euros=10.0,
+        category="Bäcker",
+    )
+
+
 def test_process_image_routes_to_nutrition_and_stores_record(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "src.agents.main_agent.route_image_task",
@@ -174,6 +185,32 @@ def test_update_nutrition_record_replaces_existing_analysis(tmp_path, monkeypatc
     assert record is not None
     assert record.analysis.calories == 110.0
     assert record.analysis.ingredients[0].amount == "330 ml"
+
+
+def test_update_expense_record_replaces_existing_analysis(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agents.main_agent.route_image_task",
+        lambda image_path, metadata=None: RoutingDecision(task_type="expense"),
+    )
+    monkeypatch.setattr("src.agents.main_agent.analyze_expense_receipt", _mock_expense_analysis)
+    db = SqliteDatabase(tmp_path / "records.db")
+    agent = PictoAgent(db)
+
+    first = agent.process_image("receipt.png")
+    updated = agent.update_expense_record(
+        first["record_id"],
+        {
+            "description": "Bakery and coffee",
+            "expense_total_amount_in_euros": 10.0,
+            "category": "Bäcker",
+        },
+    )
+
+    assert updated.analysis.expense_total_amount_in_euros == 10.0
+    record = agent.get_record(first["record_id"])
+    assert record is not None
+    assert record.analysis.expense_total_amount_in_euros == 10.0
+    assert record.analysis.category == "Bäcker"
 
 
 def test_process_image_routes_to_recipe_and_stores_record(tmp_path, monkeypatch):
@@ -345,6 +382,38 @@ def test_process_text_routes_to_nutrition_correction(tmp_path, monkeypatch):
     assert result["record_id"] == "meal-123"
     assert result["meal_id"] == "meal-123"
     assert result["analysis"]["calories"] == 110.0
+    assert agent.list_records() == []
+
+
+def test_process_text_routes_to_expense_correction(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agents.main_agent.route_text_workflow",
+        lambda text, metadata=None: TextRoutingDecision(workflow_type="expense_correction"),
+    )
+    monkeypatch.setattr("src.agents.main_agent.revise_expense_analysis", _mock_revised_expense_analysis)
+    agent = PictoAgent(SqliteDatabase(tmp_path / "records.db"))
+
+    result = agent.process_text(
+        "Actually the amount was 10 euros and it belongs under bakery",
+        metadata={
+            "latest_expense_result": {
+                "record_id": "record-123",
+                "expense_id": "expense-123",
+                "analysis": {
+                    "description": "Groceries and toiletries",
+                    "expense_total_amount_in_euros": 43.2,
+                    "category": "Lebensmitteleinkäufe",
+                },
+            }
+        },
+    )
+
+    assert result["workflow_type"] == "expense_correction"
+    assert result["task_type"] == "expense"
+    assert result["record_id"] == "record-123"
+    assert result["expense_id"] == "expense-123"
+    assert result["analysis"]["expense_total_amount_in_euros"] == 10.0
+    assert result["analysis"]["category"] == "Bäcker"
     assert agent.list_records() == []
 
 

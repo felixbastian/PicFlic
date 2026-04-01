@@ -17,7 +17,7 @@ from ..db import PostgresDatabase
 from ..logging_context import bind_log_context, generate_process_id, get_log_context, reset_log_context
 from ..models import RecipeAnalysis
 from .constants import QUERY_ALLOWED_TABLES, RECIPE_ANALYSIS_FIELDS, VOCAB_BOT_LINK_FALLBACK, WELCOME_MESSAGE
-from .corrections import apply_nutrition_correction_workflow
+from .corrections import apply_expense_correction_workflow, apply_nutrition_correction_workflow
 from .deletions import apply_delete_latest_entry_workflow
 from .formatting import (
     format_multirow_query_response,
@@ -28,10 +28,13 @@ from .formatting import (
 )
 from .persistence import persist_result, resolve_user_id
 from .state import (
+    clear_latest_expense_result,
     clear_latest_nutrition_result,
+    get_latest_expense_result,
     get_latest_nutrition_result,
     get_latest_tracking_result,
     get_recent_history,
+    remember_latest_expense_result,
     remember_latest_nutrition_result,
     remember_latest_tracking_result,
     remember_text_turn,
@@ -159,8 +162,14 @@ def _remember_photo_result(context: ContextTypes.DEFAULT_TYPE, result: dict) -> 
     remember_latest_tracking_result(context, result)
     if result["task_type"] == "nutrition":
         remember_latest_nutrition_result(context, result)
+        clear_latest_expense_result(context)
+        return
+    if result["task_type"] == "expense":
+        remember_latest_expense_result(context, result)
+        clear_latest_nutrition_result(context)
         return
     clear_latest_nutrition_result(context)
+    clear_latest_expense_result(context)
 
 
 async def _handle_text_message(
@@ -184,6 +193,9 @@ async def _handle_standard_text_message(
     latest_nutrition_result = get_latest_nutrition_result(context)
     if latest_nutrition_result is not None:
         metadata["latest_nutrition_result"] = latest_nutrition_result
+    latest_expense_result = get_latest_expense_result(context)
+    if latest_expense_result is not None:
+        metadata["latest_expense_result"] = latest_expense_result
     latest_tracking_result = get_latest_tracking_result(context)
     if latest_tracking_result is not None:
         metadata["latest_tracking_result"] = latest_tracking_result
@@ -215,6 +227,9 @@ async def _handle_text_workflow_result(
     workflow_type = result["workflow_type"]
     if workflow_type == "delete_latest_entry":
         await apply_delete_latest_entry_workflow(update, context, agent, postgres_db, incoming_text, result)
+        return
+    if workflow_type == "expense_correction":
+        await apply_expense_correction_workflow(update, context, agent, postgres_db, incoming_text, result)
         return
     if workflow_type == "nutrition_correction":
         await apply_nutrition_correction_workflow(update, context, agent, postgres_db, incoming_text, result)
@@ -258,6 +273,7 @@ async def _handle_nutrition_tracking_workflow(
     await update.message.reply_text(response, parse_mode=ParseMode.HTML)
     remember_latest_tracking_result(context, result)
     remember_latest_nutrition_result(context, result)
+    clear_latest_expense_result(context)
     remember_text_turn(context, incoming_text, [response], workflow_type="nutrition_tracking")
 
 
@@ -327,6 +343,7 @@ async def _handle_recipe_collection_workflow(
         },
     )
     clear_latest_nutrition_result(context)
+    clear_latest_expense_result(context)
     remember_text_turn(context, incoming_text, [response], workflow_type="recipe_collection")
 
 

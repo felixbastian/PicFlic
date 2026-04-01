@@ -27,9 +27,14 @@ def route_text_workflow(text: str, metadata: dict[str, Any] | None = None) -> Te
     today = date.today().isoformat()
     prompt = (
         "You are an orchestrator for a personal tracking assistant. "
-        "Metadata may include recent_history containing the last 5 chat messages and latest_nutrition_result "
-        "containing the most recent tracked nutrition entry. Use that context only to decide which workflow should "
-        "handle the current user message. "
+        "Metadata may include recent_history containing the last 5 chat messages, latest_nutrition_result "
+        "containing the most recent tracked nutrition entry, latest_expense_result containing the most recent "
+        "tracked expense entry, and latest_tracking_result containing the single most recent tracked entry of any "
+        "type. Use that context only to decide which workflow should handle the current user message. "
+        "Choose workflow_type='expense_correction' when the user is clearly revising the most recent tracked "
+        "expense entry, for example changing its amount, category, merchant, or short description. Only choose this "
+        "when latest_expense_result is available in metadata, or when latest_tracking_result is available and refers "
+        "to an expense entry, and the current message is clearly about that same previous expense. "
         "Choose workflow_type='expense_query' when the user asks about expenses, receipts, spending, money, "
         "monthly totals, categories, groceries, or similar historical spending questions. "
         "Choose workflow_type='nutrition_query' when the user asks about previously tracked calories, meals, "

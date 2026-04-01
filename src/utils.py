@@ -170,6 +170,34 @@ def revise_nutrition_analysis(
     return _normalize_corrected_nutrition_analysis(correction_text, previous, revised)
 
 
+def revise_expense_analysis(
+    correction_text: str,
+    previous_analysis: ExpenseAnalysis | Dict[str, Any],
+) -> ExpenseAnalysis:
+    """Revise the previous expense entry after routing has already chosen correction mode."""
+    previous = previous_analysis
+    if isinstance(previous_analysis, dict):
+        previous = ExpenseAnalysis.model_validate(previous_analysis)
+
+    categories = ", ".join(EXPENSE_CATEGORIES)
+    prompt = (
+        "You are an expense tracking assistant revising the user's most recent tracked expense entry. "
+        "The main router has already determined that the new message is a correction for that same tracked expense. "
+        "Use the user's latest message plus the previous expense analysis to produce one fully revised expense "
+        "analysis. "
+        f"The category must be exactly one value from this list: {categories}. "
+        "If the user names a category loosely or in another language, map it to the closest valid category from the "
+        "allowed list. Use 'Sonstige' only when nothing else fits. "
+        "Preserve the previous amount, description, and category unless the user's correction clearly changes them. "
+        "Return only the fully revised structured result."
+    )
+    user_text = (
+        f"User correction message: {correction_text}\n"
+        f"Previous expense analysis: {json.dumps(previous.to_dict(), ensure_ascii=False)}"
+    )
+    return _call_text_with_schema(prompt, user_text, ExpenseAnalysis, "expense_revision")
+
+
 def analyze_expense_receipt(image_path: str, metadata: Dict[str, Any] | None = None) -> ExpenseAnalysis:
     """Analyze a receipt image and extract the expense details."""
     categories = ", ".join(EXPENSE_CATEGORIES)

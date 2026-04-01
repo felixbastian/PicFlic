@@ -13,6 +13,7 @@ RECIPE_ANALYSIS_FIELDS = set(RecipeAnalysis.model_fields)
 RECENT_HISTORY_KEY = "_picflic_recent_messages"
 RECENT_HISTORY_LIMIT = 5
 LAST_NUTRITION_RESULT_KEY = "_picflic_last_nutrition_result"
+LAST_EXPENSE_RESULT_KEY = "_picflic_last_expense_result"
 LAST_TRACKING_RESULT_KEY = "_picflic_last_tracking_result"
 VOCAB_BOT_LINK_FALLBACK = "https://t.me/VocabTrainBot"
 WELCOME_MESSAGE = (

@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 TextWorkflowType = Literal[
     "delete_latest_entry",
     "echo",
+    "expense_correction",
     "expense_query",
     "nutrition_correction",
     "nutrition_query",

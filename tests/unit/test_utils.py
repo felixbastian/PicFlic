@@ -1,12 +1,13 @@
 from types import SimpleNamespace
 
 from src.config import AppConfig
-from src.models import NutritionAnalysis, NutritionCorrectionResult
+from src.models import ExpenseAnalysis, NutritionAnalysis, NutritionCorrectionResult
 from src.openai_schema import build_strict_openai_schema
 from src.utils import (
     analyze_nutrition_image,
     analyze_nutrition_text,
     correct_nutrition_analysis,
+    revise_expense_analysis,
     revise_nutrition_analysis,
 )
 
@@ -332,3 +333,39 @@ def test_revise_nutrition_analysis_uses_only_last_message_and_previous_entry(mon
     assert "User correction message: Actually it was 330 ml" in captured["user_text"]
     assert "Previous nutrition analysis:" in captured["user_text"]
     assert "Metadata:" not in captured["user_text"]
+
+
+def test_revise_expense_analysis_maps_to_allowed_categories_and_uses_previous_entry(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def _fake_call_text_with_schema(prompt, user_text, response_model, response_name):
+        captured["prompt"] = prompt
+        captured["user_text"] = user_text
+        captured["response_name"] = response_name
+        return ExpenseAnalysis.model_validate(
+            {
+                "description": "Bakery snack",
+                "expense_total_amount_in_euros": 10.0,
+                "category": "Bäcker",
+            }
+        )
+
+    monkeypatch.setattr("src.utils._call_text_with_schema", _fake_call_text_with_schema)
+
+    previous = ExpenseAnalysis.model_validate(
+        {
+            "description": "Groceries and toiletries",
+            "expense_total_amount_in_euros": 43.2,
+            "category": "Lebensmitteleinkäufe",
+        }
+    )
+
+    result = revise_expense_analysis("Actually make it 10 euros and put it under bakery", previous)
+
+    assert result.expense_total_amount_in_euros == 10.0
+    assert result.category == "Bäcker"
+    assert captured["response_name"] == "expense_revision"
+    assert "map it to the closest valid category" in str(captured["prompt"]).lower()
+    assert "Preserve the previous amount, description, and category" in str(captured["prompt"])
+    assert "User correction message: Actually make it 10 euros and put it under bakery" in str(captured["user_text"])
+    assert "Previous expense analysis:" in str(captured["user_text"])

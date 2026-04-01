@@ -271,6 +271,24 @@ def test_store_expense_inserts_fact_row():
     assert params[4] == "Lebensmitteleinkäufe"
 
 
+def test_update_expense_updates_fact_row():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+    analysis = ExpenseAnalysis(
+        description="Bakery snack",
+        expense_total_amount_in_euros=10.0,
+        category="Bäcker",
+    )
+
+    asyncio.run(db.update_expense("expense-123", "user-123", analysis))
+
+    calls = db._pool.connection.execute_calls
+    assert len(calls) == 1
+    query, params = calls[0]
+    assert "UPDATE fact_expenses" in query
+    assert params == ("expense-123", "user-123", "Bakery snack", 10.0, "Bäcker")
+
+
 def test_delete_expense_deletes_single_fact_row():
     db = PostgresDatabase()
     db._pool = _FakePool()

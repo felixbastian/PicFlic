@@ -12,6 +12,7 @@ from ..agents import MainAgent
 from ..db import PostgresDatabase
 from .persistence import resolve_user_id
 from .state import (
+    clear_latest_expense_result,
     clear_latest_nutrition_result,
     clear_latest_tracking_result,
     remember_text_turn,
@@ -57,6 +58,8 @@ async def apply_delete_latest_entry_workflow(
     clear_latest_tracking_result(context)
     if task_type == "nutrition":
         clear_latest_nutrition_result(context)
+    elif task_type == "expense":
+        clear_latest_expense_result(context)
 
     response = f"Deleted your last {task_type} entry."
     if postgres_db is not None and task_type == "nutrition":

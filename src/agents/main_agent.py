@@ -22,6 +22,7 @@ from ..utils import (
     analyze_nutrition_image,
     analyze_nutrition_text,
     analyze_recipe_image,
+    revise_expense_analysis,
     revise_nutrition_analysis,
     route_image_task,
 )
@@ -96,6 +97,7 @@ class MainAgent:
         graph.add_node("load_text", _load_text)
         graph.add_node("route_text", _route_text)
         graph.add_node("build_delete_latest_entry", _build_delete_latest_entry)
+        graph.add_node("build_expense_correction", _build_expense_correction)
         graph.add_node("build_expense_text_query", _build_expense_text_query)
         graph.add_node("build_nutrition_correction", _build_nutrition_correction)
         graph.add_node("build_nutrition_text_query", _build_nutrition_text_query)
@@ -110,6 +112,7 @@ class MainAgent:
             lambda state: state["workflow_type"],
             {
                 "delete_latest_entry": "build_delete_latest_entry",
+                "expense_correction": "build_expense_correction",
                 "expense_query": "build_expense_text_query",
                 "nutrition_correction": "build_nutrition_correction",
                 "nutrition_query": "build_nutrition_text_query",
@@ -122,6 +125,7 @@ class MainAgent:
         graph.add_edge("analyze_nutrition_text", "store_nutrition_text_record")
         graph.set_entry_point("load_text")
         graph.set_finish_point("build_delete_latest_entry")
+        graph.set_finish_point("build_expense_correction")
         graph.set_finish_point("build_expense_text_query")
         graph.set_finish_point("build_nutrition_correction")
         graph.set_finish_point("build_nutrition_text_query")
@@ -177,6 +181,35 @@ class MainAgent:
         logger.info(
             "Updated local nutrition record",
             extra={"event": "agent_record_updated", "record_id": record_id, "task_type": "nutrition"},
+        )
+        return updated_record
+
+    def update_expense_record(
+        self,
+        record_id: str,
+        analysis: ExpenseAnalysis | dict[str, Any],
+    ) -> ImageRecord:
+        record = self._db.get_record(record_id)
+        if record is None:
+            raise ValueError(f"Record {record_id} not found.")
+        if record.task_type != "expense":
+            raise ValueError(f"Record {record_id} is not an expense record.")
+
+        normalized = analysis
+        if isinstance(analysis, dict):
+            normalized = ExpenseAnalysis.model_validate(analysis)
+
+        updated_record = ImageRecord(
+            id=record.id,
+            image_path=record.image_path,
+            task_type=record.task_type,
+            analysis=normalized,
+            created_at=record.created_at,
+        )
+        self._db.store_record(updated_record)
+        logger.info(
+            "Updated local expense record",
+            extra={"event": "agent_record_updated", "record_id": record_id, "task_type": "expense"},
         )
         return updated_record
 
@@ -284,6 +317,30 @@ def _build_expense_text_query(state: _TextState, runtime: Any) -> dict:
         },
     )
     return plan.model_dump()
+
+
+def _build_expense_correction(state: _TextState, runtime: Any) -> dict:
+    latest_result = _get_latest_expense_result_metadata(state.get("metadata"))
+    if latest_result is None:
+        raise ValueError("Expense correction requested without latest expense context.")
+
+    analysis = revise_expense_analysis(state["text"], latest_result["analysis"])
+    logger.info(
+        "Built expense correction result",
+        extra={
+            "event": "agent_expense_correction",
+            "record_id": latest_result.get("record_id"),
+            "expense_id": latest_result.get("expense_id"),
+            "analysis": analysis.to_dict(),
+        },
+    )
+    return {
+        "workflow_type": "expense_correction",
+        "task_type": "expense",
+        "analysis": analysis.to_dict(),
+        "record_id": str(latest_result.get("record_id") or "").strip(),
+        "expense_id": str(latest_result.get("expense_id") or "").strip(),
+    }
 
 
 def _build_nutrition_text_query(state: _TextState, runtime: Any) -> dict:
@@ -446,6 +503,24 @@ def _get_latest_nutrition_result_metadata(metadata: Dict[str, Any] | None) -> Di
     if not isinstance(latest_result.get("analysis"), dict):
         return None
     return latest_result
+
+
+def _get_latest_expense_result_metadata(metadata: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    if not isinstance(metadata, dict):
+        return None
+
+    latest_result = metadata.get("latest_expense_result")
+    if isinstance(latest_result, dict) and isinstance(latest_result.get("analysis"), dict):
+        return latest_result
+
+    tracking_result = metadata.get("latest_tracking_result")
+    if not isinstance(tracking_result, dict):
+        return None
+    if str(tracking_result.get("task_type") or "").strip() != "expense":
+        return None
+    if not isinstance(tracking_result.get("analysis"), dict):
+        return None
+    return tracking_result
 
 
 def _get_latest_tracking_result_metadata(metadata: Dict[str, Any] | None) -> Dict[str, Any] | None:

@@ -12,11 +12,16 @@ from telegram.ext import ContextTypes
 from ..agents import MainAgent
 from ..db import PostgresDatabase
 from ..logging_context import bind_log_context
-from ..models import NutritionAnalysis
+from ..models import ExpenseAnalysis, NutritionAnalysis
 from .formatting import format_result_response
 from .persistence import resolve_user_id
-from .state import remember_latest_nutrition_result, remember_text_turn
-from .state import remember_latest_tracking_result
+from .state import (
+    clear_latest_nutrition_result,
+    remember_latest_expense_result,
+    remember_latest_nutrition_result,
+    remember_latest_tracking_result,
+    remember_text_turn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,5 +72,53 @@ async def apply_nutrition_correction_workflow(
             "event": "nutrition_correction_applied",
             "record_id": record_id,
             "meal_id": meal_id,
+        },
+    )
+
+
+async def apply_expense_correction_workflow(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    agent: MainAgent,
+    postgres_db: Optional[PostgresDatabase],
+    incoming_text: str,
+    result: dict,
+) -> None:
+    """Persist and reply for an expense correction selected by the main text agent."""
+    analysis = ExpenseAnalysis.model_validate(result["analysis"])
+    record_id = str(result.get("record_id") or "").strip()
+    expense_id = str(result.get("expense_id") or "").strip()
+
+    if record_id:
+        agent.update_expense_record(record_id, analysis)
+
+    if postgres_db is not None and expense_id:
+        user_id = await resolve_user_id(update, context, postgres_db)
+        bind_log_context(workflow="expense")
+        await postgres_db.update_expense(expense_id, user_id, analysis)
+
+    corrected_result = {
+        "task_type": "expense",
+        "record_id": record_id,
+        "expense_id": expense_id,
+        "analysis": analysis.to_dict(),
+    }
+    remember_latest_tracking_result(context, corrected_result)
+    remember_latest_expense_result(context, corrected_result)
+    clear_latest_nutrition_result(context)
+    response = format_result_response(corrected_result, "Updated your previous expense entry.")
+    await update.message.reply_text(response)
+    remember_text_turn(
+        context,
+        incoming_text,
+        [response],
+        workflow_type="expense_correction",
+    )
+    logger.info(
+        "Applied expense correction from central text workflow",
+        extra={
+            "event": "expense_correction_applied",
+            "record_id": record_id,
+            "expense_id": expense_id,
         },
     )

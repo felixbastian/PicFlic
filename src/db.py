@@ -487,6 +487,41 @@ class PostgresDatabase:
                 logger.error("Failed to store expense for user %s: %s", user_id, e)
                 raise
 
+    async def update_expense(
+        self,
+        expense_id: str,
+        user_id: str,
+        analysis: ExpenseAnalysis | dict,
+    ) -> None:
+        """Update an existing expense row in fact_expenses."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        normalized = analysis
+        if isinstance(analysis, dict):
+            normalized = ExpenseAnalysis.model_validate(analysis)
+
+        async with self._pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    """
+                    UPDATE fact_expenses
+                    SET description = $3,
+                        expense_total_amount_in_euros = $4,
+                        category = $5
+                    WHERE expense_id = $1 AND user_id = $2
+                    """,
+                    expense_id,
+                    user_id,
+                    normalized.description,
+                    normalized.expense_total_amount_in_euros,
+                    normalized.category,
+                )
+                logger.info("Updated fact_expenses row %s for user %s", expense_id, user_id)
+            except Exception as e:
+                logger.error("Failed to update expense %s for user %s: %s", expense_id, user_id, e)
+                raise
+
     async def delete_expense(self, expense_id: str, user_id: str) -> None:
         """Delete a single expense entry from fact_expenses for a user."""
         if not self._pool:
