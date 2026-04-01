@@ -130,6 +130,9 @@ class SqliteDatabase:
     def list_ids(self) -> Iterable[str]:
         return self._mcp.list_keys()
 
+    def delete_record(self, record_id: str) -> None:
+        self._mcp.delete_record(record_id)
+
 
 class PostgresDatabase:
     """PostgreSQL database wrapper for handling user data."""
@@ -411,6 +414,26 @@ class PostgresDatabase:
                 logger.error("Failed to update consumption %s for user %s: %s", meal_id, user_id, e)
                 raise
 
+    async def delete_consumption(self, meal_id: str, user_id: str) -> None:
+        """Delete a single nutrition entry from fact_consumption for a user."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    """
+                    DELETE FROM fact_consumption
+                    WHERE meal_id = $1 AND user_id = $2
+                    """,
+                    meal_id,
+                    user_id,
+                )
+                logger.info("Deleted fact_consumption row %s for user %s", meal_id, user_id)
+            except Exception as e:
+                logger.error("Failed to delete consumption %s for user %s: %s", meal_id, user_id, e)
+                raise
+
     async def get_daily_calories(self, user_id: str) -> int:
         """Return the user's total calories for the current database day."""
         if not self._pool:
@@ -462,6 +485,61 @@ class PostgresDatabase:
                 return expense_id
             except Exception as e:
                 logger.error("Failed to store expense for user %s: %s", user_id, e)
+                raise
+
+    async def update_expense(
+        self,
+        expense_id: str,
+        user_id: str,
+        analysis: ExpenseAnalysis | dict,
+    ) -> None:
+        """Update an existing expense row in fact_expenses."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        normalized = analysis
+        if isinstance(analysis, dict):
+            normalized = ExpenseAnalysis.model_validate(analysis)
+
+        async with self._pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    """
+                    UPDATE fact_expenses
+                    SET description = $3,
+                        expense_total_amount_in_euros = $4,
+                        category = $5
+                    WHERE expense_id = $1 AND user_id = $2
+                    """,
+                    expense_id,
+                    user_id,
+                    normalized.description,
+                    normalized.expense_total_amount_in_euros,
+                    normalized.category,
+                )
+                logger.info("Updated fact_expenses row %s for user %s", expense_id, user_id)
+            except Exception as e:
+                logger.error("Failed to update expense %s for user %s: %s", expense_id, user_id, e)
+                raise
+
+    async def delete_expense(self, expense_id: str, user_id: str) -> None:
+        """Delete a single expense entry from fact_expenses for a user."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    """
+                    DELETE FROM fact_expenses
+                    WHERE expense_id = $1 AND user_id = $2
+                    """,
+                    expense_id,
+                    user_id,
+                )
+                logger.info("Deleted fact_expenses row %s for user %s", expense_id, user_id)
+            except Exception as e:
+                logger.error("Failed to delete expense %s for user %s: %s", expense_id, user_id, e)
                 raise
 
     async def store_vocabulary(self, user_id: str, french_word: str, english_description: str) -> str:
@@ -548,6 +626,26 @@ class PostgresDatabase:
                 return dish_id
             except Exception as e:
                 logger.error("Failed to store dish for user %s: %s", user_id, e)
+                raise
+
+    async def delete_dish(self, dish_id: str, user_id: str) -> None:
+        """Delete a single dish entry from fact_dishes for a user."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    """
+                    DELETE FROM fact_dishes
+                    WHERE dish_id = $1 AND user_id = $2
+                    """,
+                    dish_id,
+                    user_id,
+                )
+                logger.info("Deleted fact_dishes row %s for user %s", dish_id, user_id)
+            except Exception as e:
+                logger.error("Failed to delete dish %s for user %s: %s", dish_id, user_id, e)
                 raise
 
     async def list_due_vocabulary_reviews(self, limit: int = 100) -> list[DueVocabularyReview]:

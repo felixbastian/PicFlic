@@ -22,6 +22,8 @@ from ..utils import (
     analyze_nutrition_image,
     analyze_nutrition_text,
     analyze_recipe_image,
+    revise_expense_analysis,
+    revise_nutrition_analysis,
     route_image_task,
 )
 
@@ -43,6 +45,9 @@ class _TextState(TypedDict):
     task_type: NotRequired[TrackingTaskType]
     analysis: NotRequired[Dict[str, Any]]
     record_id: NotRequired[str]
+    meal_id: NotRequired[str]
+    expense_id: NotRequired[str]
+    dish_id: NotRequired[str]
     explanation: NotRequired[str]
     sql_query: NotRequired[str]
     response_template: NotRequired[str]
@@ -62,6 +67,159 @@ class _MainContext(TypedDict):
     db: SqliteDatabase
 
 
+class MainAgent:
+    """An agent that routes photos and text to the correct specialized workflow."""
+
+    def __init__(self, db: SqliteDatabase):
+        self._db = db
+        self._image_graph = self._build_image_graph()
+        self._text_graph = self._build_text_graph()
+
+    def _build_image_graph(self) -> StateGraph[_ImageState, _MainContext, _ImageState, dict]:
+        graph = StateGraph(state_schema=_ImageState, context_schema=_MainContext)
+        graph.add_node("load", _load_image)
+        graph.add_node("route", _route_image)
+        graph.add_node("analyze_nutrition", _analyze_nutrition)
+        graph.add_node("analyze_expense", _analyze_expense)
+        graph.add_node("analyze_recipe", _analyze_recipe)
+        graph.add_node("store", _store_image_record)
+        graph.add_edge("load", "route")
+        graph.add_conditional_edges("route", _next_image_step)
+        graph.add_edge("analyze_nutrition", "store")
+        graph.add_edge("analyze_expense", "store")
+        graph.add_edge("analyze_recipe", "store")
+        graph.set_entry_point("load")
+        graph.set_finish_point("store")
+        return graph.compile()
+
+    def _build_text_graph(self) -> StateGraph[_TextState, _MainContext, _TextState, dict]:
+        graph = StateGraph(state_schema=_TextState, context_schema=_MainContext)
+        graph.add_node("load_text", _load_text)
+        graph.add_node("route_text", _route_text)
+        graph.add_node("build_delete_latest_entry", _build_delete_latest_entry)
+        graph.add_node("build_expense_correction", _build_expense_correction)
+        graph.add_node("build_expense_text_query", _build_expense_text_query)
+        graph.add_node("build_nutrition_correction", _build_nutrition_correction)
+        graph.add_node("build_nutrition_text_query", _build_nutrition_text_query)
+        graph.add_node("analyze_nutrition_text", _analyze_nutrition_text)
+        graph.add_node("store_nutrition_text_record", _store_nutrition_text_record)
+        graph.add_node("build_vocabulary_text_response", _build_vocabulary_text_response)
+        graph.add_node("build_recipe_collection_text_response", _build_recipe_collection_text_response)
+        graph.add_node("echo_text", _echo_text)
+        graph.add_edge("load_text", "route_text")
+        graph.add_conditional_edges(
+            "route_text",
+            lambda state: state["workflow_type"],
+            {
+                "delete_latest_entry": "build_delete_latest_entry",
+                "expense_correction": "build_expense_correction",
+                "expense_query": "build_expense_text_query",
+                "nutrition_correction": "build_nutrition_correction",
+                "nutrition_query": "build_nutrition_text_query",
+                "nutrition_tracking": "analyze_nutrition_text",
+                "vocabulary": "build_vocabulary_text_response",
+                "recipe_collection": "build_recipe_collection_text_response",
+                "echo": "echo_text",
+            },
+        )
+        graph.add_edge("analyze_nutrition_text", "store_nutrition_text_record")
+        graph.set_entry_point("load_text")
+        graph.set_finish_point("build_delete_latest_entry")
+        graph.set_finish_point("build_expense_correction")
+        graph.set_finish_point("build_expense_text_query")
+        graph.set_finish_point("build_nutrition_correction")
+        graph.set_finish_point("build_nutrition_text_query")
+        graph.set_finish_point("store_nutrition_text_record")
+        graph.set_finish_point("build_vocabulary_text_response")
+        graph.set_finish_point("build_recipe_collection_text_response")
+        graph.set_finish_point("echo_text")
+        return graph.compile()
+
+    def process_image(self, image_path: str, metadata: dict[str, Any] | None = None) -> dict:
+        metadata = metadata or {}
+        return self._image_graph.invoke(
+            {"image_path": image_path, "metadata": metadata, "analysis": {}, "task_type": "nutrition"},
+            context={"db": self._db},
+        )
+
+    def process_text(self, text: str, metadata: dict[str, Any] | None = None) -> dict:
+        metadata = metadata or {}
+        return self._text_graph.invoke(
+            {"text": text, "metadata": metadata, "workflow_type": "echo"},
+            context={"db": self._db},
+        )
+
+    def list_records(self) -> list[ImageRecord]:
+        return self._db.list_records()
+
+    def get_record(self, record_id: str) -> ImageRecord | None:
+        return self._db.get_record(record_id)
+
+    def update_nutrition_record(
+        self,
+        record_id: str,
+        analysis: NutritionAnalysis | dict[str, Any],
+    ) -> ImageRecord:
+        record = self._db.get_record(record_id)
+        if record is None:
+            raise ValueError(f"Record {record_id} not found.")
+        if record.task_type != "nutrition":
+            raise ValueError(f"Record {record_id} is not a nutrition record.")
+
+        normalized = analysis
+        if isinstance(analysis, dict):
+            normalized = NutritionAnalysis.model_validate(analysis)
+
+        updated_record = ImageRecord(
+            id=record.id,
+            image_path=record.image_path,
+            task_type=record.task_type,
+            analysis=normalized,
+            created_at=record.created_at,
+        )
+        self._db.store_record(updated_record)
+        logger.info(
+            "Updated local nutrition record",
+            extra={"event": "agent_record_updated", "record_id": record_id, "task_type": "nutrition"},
+        )
+        return updated_record
+
+    def update_expense_record(
+        self,
+        record_id: str,
+        analysis: ExpenseAnalysis | dict[str, Any],
+    ) -> ImageRecord:
+        record = self._db.get_record(record_id)
+        if record is None:
+            raise ValueError(f"Record {record_id} not found.")
+        if record.task_type != "expense":
+            raise ValueError(f"Record {record_id} is not an expense record.")
+
+        normalized = analysis
+        if isinstance(analysis, dict):
+            normalized = ExpenseAnalysis.model_validate(analysis)
+
+        updated_record = ImageRecord(
+            id=record.id,
+            image_path=record.image_path,
+            task_type=record.task_type,
+            analysis=normalized,
+            created_at=record.created_at,
+        )
+        self._db.store_record(updated_record)
+        logger.info(
+            "Updated local expense record",
+            extra={"event": "agent_record_updated", "record_id": record_id, "task_type": "expense"},
+        )
+        return updated_record
+
+    def delete_record(self, record_id: str) -> None:
+        self._db.delete_record(record_id)
+        logger.info(
+            "Deleted local tracking record",
+            extra={"event": "agent_record_deleted", "record_id": record_id},
+        )
+    
 def _load_image(state: _ImageState, runtime: Any) -> dict:
     return {"analysis": {}, "metadata": state.get("metadata", {})}
 
@@ -161,6 +319,30 @@ def _build_expense_text_query(state: _TextState, runtime: Any) -> dict:
     return plan.model_dump()
 
 
+def _build_expense_correction(state: _TextState, runtime: Any) -> dict:
+    latest_result = _get_latest_expense_result_metadata(state.get("metadata"))
+    if latest_result is None:
+        raise ValueError("Expense correction requested without latest expense context.")
+
+    analysis = revise_expense_analysis(state["text"], latest_result["analysis"])
+    logger.info(
+        "Built expense correction result",
+        extra={
+            "event": "agent_expense_correction",
+            "record_id": latest_result.get("record_id"),
+            "expense_id": latest_result.get("expense_id"),
+            "analysis": analysis.to_dict(),
+        },
+    )
+    return {
+        "workflow_type": "expense_correction",
+        "task_type": "expense",
+        "analysis": analysis.to_dict(),
+        "record_id": str(latest_result.get("record_id") or "").strip(),
+        "expense_id": str(latest_result.get("expense_id") or "").strip(),
+    }
+
+
 def _build_nutrition_text_query(state: _TextState, runtime: Any) -> dict:
     plan = build_nutrition_query_plan(state["text"], state.get("metadata"))
     logger.info(
@@ -173,6 +355,74 @@ def _build_nutrition_text_query(state: _TextState, runtime: Any) -> dict:
         },
     )
     return plan.model_dump()
+
+
+def _build_nutrition_correction(state: _TextState, runtime: Any) -> dict:
+    latest_result = _get_latest_nutrition_result_metadata(state.get("metadata"))
+    if latest_result is None:
+        raise ValueError("Nutrition correction requested without latest nutrition context.")
+
+    analysis = revise_nutrition_analysis(state["text"], latest_result["analysis"])
+    logger.info(
+        "Built nutrition correction result",
+        extra={
+            "event": "agent_nutrition_correction",
+            "record_id": latest_result.get("record_id"),
+            "meal_id": latest_result.get("meal_id"),
+            "analysis": analysis.to_dict(),
+        },
+    )
+    return {
+        "workflow_type": "nutrition_correction",
+        "task_type": "nutrition",
+        "analysis": analysis.to_dict(),
+        "record_id": str(latest_result.get("record_id") or "").strip(),
+        "meal_id": str(latest_result.get("meal_id") or "").strip(),
+    }
+
+
+def _build_delete_latest_entry(state: _TextState, runtime: Any) -> dict:
+    latest_result = _get_latest_tracking_result_metadata(state.get("metadata"))
+    if latest_result is None:
+        return {
+            "workflow_type": "delete_latest_entry",
+            "task_type": "",
+            "record_id": "",
+            "meal_id": "",
+            "expense_id": "",
+            "dish_id": "",
+        }
+
+    task_type = str(latest_result.get("task_type") or "").strip()
+    if task_type not in {"nutrition", "expense", "recipe"}:
+        return {
+            "workflow_type": "delete_latest_entry",
+            "task_type": "",
+            "record_id": "",
+            "meal_id": "",
+            "expense_id": "",
+            "dish_id": "",
+        }
+
+    logger.info(
+        "Built delete-latest-entry result",
+        extra={
+            "event": "agent_delete_latest_entry",
+            "task_type": task_type,
+            "record_id": latest_result.get("record_id"),
+            "meal_id": latest_result.get("meal_id"),
+            "expense_id": latest_result.get("expense_id"),
+            "dish_id": latest_result.get("dish_id"),
+        },
+    )
+    return {
+        "workflow_type": "delete_latest_entry",
+        "task_type": task_type,
+        "record_id": str(latest_result.get("record_id") or "").strip(),
+        "meal_id": str(latest_result.get("meal_id") or "").strip(),
+        "expense_id": str(latest_result.get("expense_id") or "").strip(),
+        "dish_id": str(latest_result.get("dish_id") or "").strip(),
+    }
 
 
 def _analyze_nutrition_text(state: _TextState, runtime: Any) -> dict:
@@ -244,6 +494,47 @@ def _build_recipe_collection_text_response(state: _TextState, runtime: Any) -> d
     return result.model_dump()
 
 
+def _get_latest_nutrition_result_metadata(metadata: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    if not isinstance(metadata, dict):
+        return None
+    latest_result = metadata.get("latest_nutrition_result")
+    if not isinstance(latest_result, dict):
+        return None
+    if not isinstance(latest_result.get("analysis"), dict):
+        return None
+    return latest_result
+
+
+def _get_latest_expense_result_metadata(metadata: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    if not isinstance(metadata, dict):
+        return None
+
+    latest_result = metadata.get("latest_expense_result")
+    if isinstance(latest_result, dict) and isinstance(latest_result.get("analysis"), dict):
+        return latest_result
+
+    tracking_result = metadata.get("latest_tracking_result")
+    if not isinstance(tracking_result, dict):
+        return None
+    if str(tracking_result.get("task_type") or "").strip() != "expense":
+        return None
+    if not isinstance(tracking_result.get("analysis"), dict):
+        return None
+    return tracking_result
+
+
+def _get_latest_tracking_result_metadata(metadata: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    if not isinstance(metadata, dict):
+        return None
+    latest_result = metadata.get("latest_tracking_result")
+    if not isinstance(latest_result, dict):
+        return None
+    task_type = str(latest_result.get("task_type") or "").strip()
+    if not task_type:
+        return None
+    return latest_result
+
+
 def _store_tracking_record(
     source_reference: str,
     task_type: TrackingTaskType,
@@ -265,115 +556,6 @@ def _build_text_record_source(text: str) -> str:
     if len(normalized) > 180:
         normalized = f"{normalized[:177].rstrip()}..."
     return f"text://{normalized}"
-
-
-class MainAgent:
-    """An agent that routes photos and text to the correct specialized workflow."""
-
-    def __init__(self, db: SqliteDatabase):
-        self._db = db
-        self._image_graph = self._build_image_graph()
-        self._text_graph = self._build_text_graph()
-
-    def _build_image_graph(self) -> StateGraph[_ImageState, _MainContext, _ImageState, dict]:
-        graph = StateGraph(state_schema=_ImageState, context_schema=_MainContext)
-        graph.add_node("load", _load_image)
-        graph.add_node("route", _route_image)
-        graph.add_node("analyze_nutrition", _analyze_nutrition)
-        graph.add_node("analyze_expense", _analyze_expense)
-        graph.add_node("analyze_recipe", _analyze_recipe)
-        graph.add_node("store", _store_image_record)
-        graph.add_edge("load", "route")
-        graph.add_conditional_edges("route", _next_image_step)
-        graph.add_edge("analyze_nutrition", "store")
-        graph.add_edge("analyze_expense", "store")
-        graph.add_edge("analyze_recipe", "store")
-        graph.set_entry_point("load")
-        graph.set_finish_point("store")
-        return graph.compile()
-
-    def _build_text_graph(self) -> StateGraph[_TextState, _MainContext, _TextState, dict]:
-        graph = StateGraph(state_schema=_TextState, context_schema=_MainContext)
-        graph.add_node("load_text", _load_text)
-        graph.add_node("route_text", _route_text)
-        graph.add_node("build_expense_text_query", _build_expense_text_query)
-        graph.add_node("build_nutrition_text_query", _build_nutrition_text_query)
-        graph.add_node("analyze_nutrition_text", _analyze_nutrition_text)
-        graph.add_node("store_nutrition_text_record", _store_nutrition_text_record)
-        graph.add_node("build_vocabulary_text_response", _build_vocabulary_text_response)
-        graph.add_node("build_recipe_collection_text_response", _build_recipe_collection_text_response)
-        graph.add_node("echo_text", _echo_text)
-        graph.add_edge("load_text", "route_text")
-        graph.add_conditional_edges(
-            "route_text",
-            lambda state: state["workflow_type"],
-            {
-                "expense_query": "build_expense_text_query",
-                "nutrition_query": "build_nutrition_text_query",
-                "nutrition_tracking": "analyze_nutrition_text",
-                "vocabulary": "build_vocabulary_text_response",
-                "recipe_collection": "build_recipe_collection_text_response",
-                "echo": "echo_text",
-            },
-        )
-        graph.add_edge("analyze_nutrition_text", "store_nutrition_text_record")
-        graph.set_entry_point("load_text")
-        graph.set_finish_point("build_expense_text_query")
-        graph.set_finish_point("build_nutrition_text_query")
-        graph.set_finish_point("store_nutrition_text_record")
-        graph.set_finish_point("build_vocabulary_text_response")
-        graph.set_finish_point("build_recipe_collection_text_response")
-        graph.set_finish_point("echo_text")
-        return graph.compile()
-
-    def process_image(self, image_path: str, metadata: dict[str, Any] | None = None) -> dict:
-        metadata = metadata or {}
-        return self._image_graph.invoke(
-            {"image_path": image_path, "metadata": metadata, "analysis": {}, "task_type": "nutrition"},
-            context={"db": self._db},
-        )
-
-    def process_text(self, text: str, metadata: dict[str, Any] | None = None) -> dict:
-        metadata = metadata or {}
-        return self._text_graph.invoke(
-            {"text": text, "metadata": metadata, "workflow_type": "echo"},
-            context={"db": self._db},
-        )
-
-    def list_records(self) -> list[ImageRecord]:
-        return self._db.list_records()
-
-    def get_record(self, record_id: str) -> ImageRecord | None:
-        return self._db.get_record(record_id)
-
-    def update_nutrition_record(
-        self,
-        record_id: str,
-        analysis: NutritionAnalysis | dict[str, Any],
-    ) -> ImageRecord:
-        record = self._db.get_record(record_id)
-        if record is None:
-            raise ValueError(f"Record {record_id} not found.")
-        if record.task_type != "nutrition":
-            raise ValueError(f"Record {record_id} is not a nutrition record.")
-
-        normalized = analysis
-        if isinstance(analysis, dict):
-            normalized = NutritionAnalysis.model_validate(analysis)
-
-        updated_record = ImageRecord(
-            id=record.id,
-            image_path=record.image_path,
-            task_type=record.task_type,
-            analysis=normalized,
-            created_at=record.created_at,
-        )
-        self._db.store_record(updated_record)
-        logger.info(
-            "Updated local nutrition record",
-            extra={"event": "agent_record_updated", "record_id": record_id, "task_type": "nutrition"},
-        )
-        return updated_record
 
 
 PictoAgent = MainAgent

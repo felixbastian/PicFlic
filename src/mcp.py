@@ -24,6 +24,10 @@ class MCPAdapter(ABC):
     def list_keys(self) -> Iterable[str]:
         """List keys currently stored in the context."""
 
+    @abstractmethod
+    def delete(self, key: str) -> None:
+        """Delete a previously stored value from the context."""
+
 
 class SqliteMCPAdapter(MCPAdapter):
     """A minimal MCP adapter that stores data in an SQLite key/value table."""
@@ -60,6 +64,10 @@ class SqliteMCPAdapter(MCPAdapter):
         cursor = self._conn.execute("SELECT key FROM mcp_context")
         return [r[0] for r in cursor.fetchall()]
 
+    def delete(self, key: str) -> None:
+        self._conn.execute("DELETE FROM mcp_context WHERE key = ?", (key,))
+        self._conn.commit()
+
 
 class DatabaseMCPAdapter(SqliteMCPAdapter):
     """A small helper that stores `ImageRecord` entries as well."""
@@ -73,3 +81,6 @@ class DatabaseMCPAdapter(SqliteMCPAdapter):
 
     def list_records(self) -> list[ImageRecord]:
         return [ImageRecord.from_dict(self.read(k)) for k in self.list_keys()]
+
+    def delete_record(self, record_id: str) -> None:
+        self.delete(record_id)

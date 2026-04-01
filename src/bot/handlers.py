@@ -17,7 +17,8 @@ from ..db import PostgresDatabase
 from ..logging_context import bind_log_context, generate_process_id, get_log_context, reset_log_context
 from ..models import RecipeAnalysis
 from .constants import QUERY_ALLOWED_TABLES, RECIPE_ANALYSIS_FIELDS, VOCAB_BOT_LINK_FALLBACK, WELCOME_MESSAGE
-from .corrections import try_apply_latest_nutrition_correction
+from .corrections import apply_expense_correction_workflow, apply_nutrition_correction_workflow
+from .deletions import apply_delete_latest_entry_workflow
 from .formatting import (
     format_multirow_query_response,
     format_query_response,
@@ -27,9 +28,15 @@ from .formatting import (
 )
 from .persistence import persist_result, resolve_user_id
 from .state import (
+    clear_latest_expense_result,
     clear_latest_nutrition_result,
+    get_latest_expense_result,
+    get_latest_nutrition_result,
+    get_latest_tracking_result,
     get_recent_history,
+    remember_latest_expense_result,
     remember_latest_nutrition_result,
+    remember_latest_tracking_result,
     remember_text_turn,
 )
 
@@ -152,10 +159,17 @@ async def _reply_with_photo_result(update: Update, result: dict, response: str) 
 
 
 def _remember_photo_result(context: ContextTypes.DEFAULT_TYPE, result: dict) -> None:
+    remember_latest_tracking_result(context, result)
     if result["task_type"] == "nutrition":
         remember_latest_nutrition_result(context, result)
+        clear_latest_expense_result(context)
+        return
+    if result["task_type"] == "expense":
+        remember_latest_expense_result(context, result)
+        clear_latest_nutrition_result(context)
         return
     clear_latest_nutrition_result(context)
+    clear_latest_expense_result(context)
 
 
 async def _handle_text_message(
@@ -165,9 +179,6 @@ async def _handle_text_message(
     postgres_db: Optional[PostgresDatabase],
 ) -> None:
     incoming_text = update.message.text or ""
-    if await try_apply_latest_nutrition_correction(update, context, agent, postgres_db, incoming_text):
-        return
-
     await _handle_standard_text_message(update, context, agent, postgres_db, incoming_text)
 
 
@@ -178,9 +189,20 @@ async def _handle_standard_text_message(
     postgres_db: Optional[PostgresDatabase],
     incoming_text: str,
 ) -> None:
+    metadata = {"recent_history": get_recent_history(context)}
+    latest_nutrition_result = get_latest_nutrition_result(context)
+    if latest_nutrition_result is not None:
+        metadata["latest_nutrition_result"] = latest_nutrition_result
+    latest_expense_result = get_latest_expense_result(context)
+    if latest_expense_result is not None:
+        metadata["latest_expense_result"] = latest_expense_result
+    latest_tracking_result = get_latest_tracking_result(context)
+    if latest_tracking_result is not None:
+        metadata["latest_tracking_result"] = latest_tracking_result
+
     result = agent.process_text(
         incoming_text,
-        metadata={"recent_history": get_recent_history(context)},
+        metadata=metadata,
     )
     logger.info(
         "Text workflow produced result",
@@ -191,17 +213,27 @@ async def _handle_standard_text_message(
             "sql_query": result.get("sql_query"),
         },
     )
-    await _handle_text_workflow_result(update, context, postgres_db, incoming_text, result)
+    await _handle_text_workflow_result(update, context, agent, postgres_db, incoming_text, result)
 
 
 async def _handle_text_workflow_result(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
+    agent: MainAgent,
     postgres_db: Optional[PostgresDatabase],
     incoming_text: str,
     result: dict,
 ) -> None:
     workflow_type = result["workflow_type"]
+    if workflow_type == "delete_latest_entry":
+        await apply_delete_latest_entry_workflow(update, context, agent, postgres_db, incoming_text, result)
+        return
+    if workflow_type == "expense_correction":
+        await apply_expense_correction_workflow(update, context, agent, postgres_db, incoming_text, result)
+        return
+    if workflow_type == "nutrition_correction":
+        await apply_nutrition_correction_workflow(update, context, agent, postgres_db, incoming_text, result)
+        return
     if workflow_type == "nutrition_tracking":
         await _handle_nutrition_tracking_workflow(update, context, postgres_db, incoming_text, result)
         return
@@ -239,7 +271,9 @@ async def _handle_nutrition_tracking_workflow(
 
     response = format_result_response(result, persistence_note)
     await update.message.reply_text(response, parse_mode=ParseMode.HTML)
+    remember_latest_tracking_result(context, result)
     remember_latest_nutrition_result(context, result)
+    clear_latest_expense_result(context)
     remember_text_turn(context, incoming_text, [response], workflow_type="nutrition_tracking")
 
 
@@ -294,12 +328,22 @@ async def _handle_recipe_collection_workflow(
         return
 
     user_id = await resolve_user_id(update, context, postgres_db)
-    await postgres_db.store_dish(
+    dish_id = await postgres_db.store_dish(
         user_id,
         RecipeAnalysis.model_validate({field_name: result.get(field_name) for field_name in RECIPE_ANALYSIS_FIELDS}),
     )
     response = format_recipe_response(result, "Recipe added to your collection.")
     await update.message.reply_text(response)
+    remember_latest_tracking_result(
+        context,
+        {
+            "task_type": "recipe",
+            "dish_id": dish_id,
+            "analysis": {field_name: result.get(field_name) for field_name in RECIPE_ANALYSIS_FIELDS},
+        },
+    )
+    clear_latest_nutrition_result(context)
+    clear_latest_expense_result(context)
     remember_text_turn(context, incoming_text, [response], workflow_type="recipe_collection")
 
 

@@ -235,6 +235,19 @@ def test_update_consumption_updates_fact_row():
     assert params == ("meal-123", "user-123", "drink", 110, ["alcoholic"], 1.0)
 
 
+def test_delete_consumption_deletes_single_fact_row():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+
+    asyncio.run(db.delete_consumption("meal-123", "user-123"))
+
+    calls = db._pool.connection.execute_calls
+    assert len(calls) == 1
+    query, params = calls[0]
+    assert "DELETE FROM fact_consumption" in query
+    assert params == ("meal-123", "user-123")
+
+
 def test_store_expense_inserts_fact_row():
     db = PostgresDatabase()
     db._pool = _FakePool()
@@ -256,6 +269,37 @@ def test_store_expense_inserts_fact_row():
     assert params[2] == "Groceries and toiletries"
     assert params[3] == 43.20
     assert params[4] == "Lebensmitteleinkäufe"
+
+
+def test_update_expense_updates_fact_row():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+    analysis = ExpenseAnalysis(
+        description="Bakery snack",
+        expense_total_amount_in_euros=10.0,
+        category="Bäcker",
+    )
+
+    asyncio.run(db.update_expense("expense-123", "user-123", analysis))
+
+    calls = db._pool.connection.execute_calls
+    assert len(calls) == 1
+    query, params = calls[0]
+    assert "UPDATE fact_expenses" in query
+    assert params == ("expense-123", "user-123", "Bakery snack", 10.0, "Bäcker")
+
+
+def test_delete_expense_deletes_single_fact_row():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+
+    asyncio.run(db.delete_expense("expense-123", "user-123"))
+
+    calls = db._pool.connection.execute_calls
+    assert len(calls) == 1
+    query, params = calls[0]
+    assert "DELETE FROM fact_expenses" in query
+    assert params == ("expense-123", "user-123")
 
 
 def test_store_vocabulary_inserts_fact_row():
@@ -309,6 +353,19 @@ def test_store_dish_inserts_fact_row():
     assert params[6] is True
     assert params[7] is None
     assert params[8] == "monthly"
+
+
+def test_delete_dish_deletes_single_fact_row():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+
+    asyncio.run(db.delete_dish("dish-123", "user-123"))
+
+    calls = db._pool.connection.execute_calls
+    assert len(calls) == 1
+    query, params = calls[0]
+    assert "DELETE FROM fact_dishes" in query
+    assert params == ("dish-123", "user-123")
 
 
 def test_list_due_vocabulary_reviews_returns_due_rows():

@@ -10,11 +10,15 @@ from src.bot import (
     format_query_response,
     format_result_response,
     format_vocabulary_response,
+    get_latest_expense_result,
     get_latest_nutrition_result,
+    get_latest_tracking_result,
     get_recent_history,
     handle_message,
     persist_result,
+    remember_latest_expense_result,
     remember_latest_nutrition_result,
+    remember_latest_tracking_result,
     remember_text_turn,
     resolve_user_id,
     start,
@@ -25,7 +29,6 @@ from src.models import (
     DueVocabularyReview,
     ExpenseAnalysis,
     NutritionAnalysis,
-    NutritionCorrectionResult,
     RecipeAnalysis,
     VocabularyReviewResult,
 )
@@ -70,7 +73,9 @@ class _FakeAgent:
     ) -> None:
         self.image_calls: list[dict] = []
         self.text_calls: list[dict] = []
+        self.updated_expense_records: list[dict] = []
         self.updated_nutrition_records: list[dict] = []
+        self.deleted_records: list[str] = []
         self.image_result = image_result or {
             "task_type": "nutrition",
             "record_id": "meal-123",
@@ -100,6 +105,12 @@ class _FakeAgent:
     def update_nutrition_record(self, record_id: str, analysis: NutritionAnalysis | dict) -> None:
         self.updated_nutrition_records.append({"record_id": record_id, "analysis": analysis})
 
+    def update_expense_record(self, record_id: str, analysis: ExpenseAnalysis | dict) -> None:
+        self.updated_expense_records.append({"record_id": record_id, "analysis": analysis})
+
+    def delete_record(self, record_id: str) -> None:
+        self.deleted_records.append(record_id)
+
 
 class _FakePostgresDatabase:
     def __init__(self) -> None:
@@ -109,8 +120,12 @@ class _FakePostgresDatabase:
         self.dish_calls: list[dict] = []
         self.vocabulary_calls: list[dict] = []
         self.daily_calories_calls: list[str] = []
+        self.updated_expense_calls: list[dict] = []
         self.updated_consumption_calls: list[dict] = []
         self.query_calls: list[dict] = []
+        self.deleted_consumption_calls: list[dict] = []
+        self.deleted_expense_calls: list[dict] = []
+        self.deleted_dish_calls: list[dict] = []
         self.mark_prompted_calls: list[str] = []
         self.record_review_calls: list[dict] = []
         self.vocab_bot_activated = True
@@ -170,6 +185,20 @@ class _FakePostgresDatabase:
         self.updated_consumption_calls.append(
             {"meal_id": meal_id, "user_id": user_id, "analysis": analysis}
         )
+
+    async def update_expense(self, expense_id: str, user_id: str, analysis: ExpenseAnalysis | dict) -> None:
+        self.updated_expense_calls.append(
+            {"expense_id": expense_id, "user_id": user_id, "analysis": analysis}
+        )
+
+    async def delete_consumption(self, meal_id: str, user_id: str) -> None:
+        self.deleted_consumption_calls.append({"meal_id": meal_id, "user_id": user_id})
+
+    async def delete_expense(self, expense_id: str, user_id: str) -> None:
+        self.deleted_expense_calls.append({"expense_id": expense_id, "user_id": user_id})
+
+    async def delete_dish(self, dish_id: str, user_id: str) -> None:
+        self.deleted_dish_calls.append({"dish_id": dish_id, "user_id": user_id})
 
     async def execute_guarded_query(
         self, query: str, user_id: str, allowed_tables: tuple[str, ...]
@@ -345,6 +374,14 @@ def test_handle_message_stores_fact_expense():
     assert len(postgres_db.expense_calls) == 1
     assert postgres_db.expense_calls[0]["user_id"] == "user-123"
     assert postgres_db.expense_calls[0]["analysis"].category == "Lebensmitteleinkäufe"
+    latest_result = get_latest_tracking_result(context)
+    assert latest_result is not None
+    assert latest_result["task_type"] == "expense"
+    assert latest_result["expense_id"] == "expense-123"
+    latest_expense = get_latest_expense_result(context)
+    assert latest_expense is not None
+    assert latest_expense["expense_id"] == "expense-123"
+    assert latest_expense["analysis"]["category"] == "Lebensmitteleinkäufe"
     assert postgres_db.daily_calories_calls == []
     assert message.replies == [
         "Expense added to the database.\n"
@@ -388,6 +425,10 @@ def test_handle_message_stores_fact_dish():
     assert len(postgres_db.dish_calls) == 1
     assert postgres_db.dish_calls[0]["user_id"] == "user-123"
     assert postgres_db.dish_calls[0]["analysis"].name == "Chicken rice bowl"
+    latest_result = get_latest_tracking_result(context)
+    assert latest_result is not None
+    assert latest_result["task_type"] == "recipe"
+    assert latest_result["dish_id"] == "dish-123"
     assert message.replies == [
         "Recipe added to your collection.\n"
         "Name: Chicken rice bowl\n"
@@ -457,9 +498,14 @@ def test_handle_message_passes_caption_as_user_prompt():
     assert message.reply_kwargs == [{"parse_mode": ParseMode.HTML}]
 
 
-def test_handle_message_applies_nutrition_correction_and_updates_existing_entry(monkeypatch):
-    corrected_analysis = NutritionAnalysis.model_validate(
-        {
+def test_handle_message_applies_nutrition_correction_and_updates_existing_entry():
+    agent = _FakeAgent()
+    agent.text_result = {
+        "workflow_type": "nutrition_correction",
+        "task_type": "nutrition",
+        "record_id": "meal-123",
+        "meal_id": "meal-123",
+        "analysis": {
             "ingredients": [
                 {"name": "beer", "amount": "330 ml", "calories": 110.0},
             ],
@@ -468,17 +514,8 @@ def test_handle_message_applies_nutrition_correction_and_updates_existing_entry(
             "macros": {"carbs": 9.0, "protein": 1.0, "fat": 0.0},
             "tags": ["alcoholic"],
             "alcohol_units": 1.0,
-        }
-    )
-    monkeypatch.setattr(
-        "src.bot.correct_nutrition_analysis",
-        lambda text, previous_analysis, metadata=None: NutritionCorrectionResult(
-            apply_correction=True,
-            analysis=corrected_analysis,
-        ),
-    )
-
-    agent = _FakeAgent()
+        },
+    }
     postgres_db = _FakePostgresDatabase()
     message = _FakeMessage()
     message.photo = []
@@ -497,6 +534,15 @@ def test_handle_message_applies_nutrition_correction_and_updates_existing_entry(
         application=SimpleNamespace(bot_data={}),
         user_data={},
     )
+    remember_latest_tracking_result(
+        context,
+        {
+            "task_type": "nutrition",
+            "record_id": "meal-123",
+            "meal_id": "meal-123",
+            "analysis": agent.image_result["analysis"],
+        },
+    )
     remember_latest_nutrition_result(
         context,
         {
@@ -509,7 +555,23 @@ def test_handle_message_applies_nutrition_correction_and_updates_existing_entry(
 
     asyncio.run(handle_message(update, context, agent, postgres_db))
 
-    assert agent.text_calls == []
+    assert agent.text_calls[0]["text"] == message.text
+    assert agent.text_calls[0]["metadata"] == {
+        "recent_history": [],
+        "latest_tracking_result": {
+            "task_type": "nutrition",
+            "record_id": "meal-123",
+            "meal_id": "meal-123",
+            "expense_id": "",
+            "dish_id": "",
+            "analysis": agent.image_result["analysis"],
+        },
+        "latest_nutrition_result": {
+            "record_id": "meal-123",
+            "meal_id": "meal-123",
+            "analysis": agent.image_result["analysis"],
+        },
+    }
     assert agent.updated_nutrition_records[0]["record_id"] == "meal-123"
     assert postgres_db.updated_consumption_calls[0]["meal_id"] == "meal-123"
     assert postgres_db.updated_consumption_calls[0]["user_id"] == "user-123"
@@ -528,6 +590,225 @@ def test_handle_message_applies_nutrition_correction_and_updates_existing_entry(
         "<b>Today total calories:</b> 1800"
     ]
     assert message.reply_kwargs == [{"parse_mode": ParseMode.HTML}]
+
+
+def test_handle_message_applies_expense_correction_and_updates_existing_entry():
+    agent = _FakeAgent()
+    agent.text_result = {
+        "workflow_type": "expense_correction",
+        "task_type": "expense",
+        "record_id": "record-456",
+        "expense_id": "expense-456",
+        "analysis": {
+            "description": "Bakery snack",
+            "expense_total_amount_in_euros": 10.0,
+            "category": "Bäcker",
+        },
+    }
+    postgres_db = _FakePostgresDatabase()
+    message = _FakeMessage()
+    message.photo = []
+    message.text = "Actually the amount was 10 euros and this belongs under bakery"
+    update = SimpleNamespace(
+        update_id=1019,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    context = SimpleNamespace(
+        application=SimpleNamespace(bot_data={}),
+        user_data={},
+    )
+    remember_latest_tracking_result(
+        context,
+        {
+            "task_type": "expense",
+            "record_id": "record-456",
+            "expense_id": "expense-456",
+            "analysis": {
+                "description": "Groceries and toiletries",
+                "expense_total_amount_in_euros": 43.2,
+                "category": "Lebensmitteleinkäufe",
+            },
+        },
+    )
+    remember_latest_expense_result(
+        context,
+        {
+            "task_type": "expense",
+            "record_id": "record-456",
+            "expense_id": "expense-456",
+            "analysis": {
+                "description": "Groceries and toiletries",
+                "expense_total_amount_in_euros": 43.2,
+                "category": "Lebensmitteleinkäufe",
+            },
+        },
+    )
+
+    asyncio.run(handle_message(update, context, agent, postgres_db))
+
+    assert agent.text_calls[0]["text"] == message.text
+    assert agent.text_calls[0]["metadata"] == {
+        "recent_history": [],
+        "latest_expense_result": {
+            "record_id": "record-456",
+            "expense_id": "expense-456",
+            "analysis": {
+                "description": "Groceries and toiletries",
+                "expense_total_amount_in_euros": 43.2,
+                "category": "Lebensmitteleinkäufe",
+            },
+        },
+        "latest_tracking_result": {
+            "task_type": "expense",
+            "record_id": "record-456",
+            "meal_id": "",
+            "expense_id": "expense-456",
+            "dish_id": "",
+            "analysis": {
+                "description": "Groceries and toiletries",
+                "expense_total_amount_in_euros": 43.2,
+                "category": "Lebensmitteleinkäufe",
+            },
+        },
+    }
+    assert agent.updated_expense_records[0]["record_id"] == "record-456"
+    assert postgres_db.updated_expense_calls[0]["expense_id"] == "expense-456"
+    assert postgres_db.updated_expense_calls[0]["user_id"] == "user-123"
+    latest_expense = get_latest_expense_result(context)
+    assert latest_expense is not None
+    assert latest_expense["analysis"]["expense_total_amount_in_euros"] == 10.0
+    assert latest_expense["analysis"]["category"] == "Bäcker"
+    assert message.replies == [
+        "Updated your previous expense entry.\n"
+        "Total: EUR 10.00\n"
+        "Category: Bäcker\n"
+        "Description: Bakery snack"
+    ]
+    assert message.reply_kwargs == [{}]
+
+
+def test_handle_message_deletes_latest_nutrition_entry_from_text():
+    agent = _FakeAgent(
+        text_result={
+            "workflow_type": "delete_latest_entry",
+            "task_type": "nutrition",
+            "record_id": "meal-123",
+            "meal_id": "meal-123",
+            "expense_id": "",
+            "dish_id": "",
+        }
+    )
+    postgres_db = _FakePostgresDatabase()
+    message = _FakeMessage()
+    message.photo = []
+    message.text = "That was a mistake, please undo it"
+    update = SimpleNamespace(
+        update_id=1017,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
+    remember_latest_tracking_result(
+        context,
+        {
+            "task_type": "nutrition",
+            "record_id": "meal-123",
+            "meal_id": "meal-123",
+            "analysis": agent.image_result["analysis"],
+        },
+    )
+    remember_latest_nutrition_result(
+        context,
+        {
+            "task_type": "nutrition",
+            "record_id": "meal-123",
+            "meal_id": "meal-123",
+            "analysis": agent.image_result["analysis"],
+        },
+    )
+
+    asyncio.run(handle_message(update, context, agent, postgres_db))
+
+    assert agent.text_calls[0]["metadata"]["latest_tracking_result"]["record_id"] == "meal-123"
+    assert agent.deleted_records == ["meal-123"]
+    assert postgres_db.deleted_consumption_calls == [{"meal_id": "meal-123", "user_id": "user-123"}]
+    assert postgres_db.daily_calories_calls == ["user-123"]
+    assert get_latest_tracking_result(context) is None
+    assert get_latest_nutrition_result(context) is None
+    assert message.replies == ["Deleted your last nutrition entry. Today's total calories: 1800"]
+
+
+def test_handle_message_deletes_latest_expense_entry_from_text():
+    agent = _FakeAgent(
+        text_result={
+            "workflow_type": "delete_latest_entry",
+            "task_type": "expense",
+            "record_id": "record-456",
+            "meal_id": "",
+            "expense_id": "expense-456",
+            "dish_id": "",
+        }
+    )
+    postgres_db = _FakePostgresDatabase()
+    message = _FakeMessage()
+    message.photo = []
+    message.text = "Please take that last one back"
+    update = SimpleNamespace(
+        update_id=1018,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
+    remember_latest_tracking_result(
+        context,
+        {
+            "task_type": "expense",
+            "record_id": "record-456",
+            "expense_id": "expense-456",
+            "analysis": {
+                "description": "Groceries",
+                "expense_total_amount_in_euros": 12.5,
+                "category": "Lebensmitteleinkäufe",
+            },
+        },
+    )
+    remember_latest_expense_result(
+        context,
+        {
+            "task_type": "expense",
+            "record_id": "record-456",
+            "expense_id": "expense-456",
+            "analysis": {
+                "description": "Groceries",
+                "expense_total_amount_in_euros": 12.5,
+                "category": "Lebensmitteleinkäufe",
+            },
+        },
+    )
+
+    asyncio.run(handle_message(update, context, agent, postgres_db))
+
+    assert agent.deleted_records == ["record-456"]
+    assert postgres_db.deleted_expense_calls == [{"expense_id": "expense-456", "user_id": "user-123"}]
+    assert get_latest_tracking_result(context) is None
+    assert get_latest_expense_result(context) is None
+    assert message.replies == ["Deleted your last expense entry."]
 
 
 def test_handle_message_runs_expense_text_query():
@@ -913,6 +1194,10 @@ def test_handle_message_stores_recipe_collection_entry_from_text():
 
     assert len(postgres_db.dish_calls) == 1
     assert postgres_db.dish_calls[0]["analysis"].name == "Lemon pasta"
+    latest_result = get_latest_tracking_result(context)
+    assert latest_result is not None
+    assert latest_result["task_type"] == "recipe"
+    assert latest_result["dish_id"] == "dish-123"
     assert message.replies == [
         "Recipe added to your collection.\n"
         "Name: Lemon pasta\n"
@@ -1382,6 +1667,11 @@ def test_remember_text_turn_keeps_recent_history_compact():
     )
 
     assert get_recent_history(context) == [
+        {
+            "role": "user",
+            "text": "bonjour",
+            "workflow": "vocabulary",
+        },
         {
             "role": "assistant",
             "text": "Bonjour means hello.",
