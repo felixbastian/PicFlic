@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
@@ -597,6 +598,53 @@ class PostgresDatabase:
                 extra={"event": "vocabulary_due_loaded", "due_review_count": len(due_reviews)},
             )
             return due_reviews
+
+    async def list_stale_vocabulary_review_reminders(
+        self,
+        limit: int = 100,
+        resend_after: timedelta = timedelta(hours=1),
+    ) -> list[DueVocabularyReview]:
+        """Return at most one stale pending vocabulary review per user for reminder delivery."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT ON (v.user_id)
+                    v.vocabulary_id,
+                    v.user_id,
+                    u.telegram_user_id,
+                    v.french_word,
+                    v.english_description,
+                    v.current_review_stage,
+                    v.next_review_at
+                FROM fact_vocabulary v
+                JOIN dim_user u ON u.user_id = v.user_id
+                WHERE v.finished = FALSE
+                  AND v.shelf = FALSE
+                  AND v.awaiting_review = TRUE
+                  AND (
+                      v.last_review_prompted_at IS NULL
+                      OR v.last_review_prompted_at <= CURRENT_TIMESTAMP - $1::INTERVAL
+                  )
+                  AND u.telegram_user_id IS NOT NULL
+                  AND COALESCE(u.has_vocab_bot_activated, FALSE) = TRUE
+                ORDER BY v.user_id, v.last_review_prompted_at ASC NULLS FIRST, v.created_at ASC
+                LIMIT $2
+                """,
+                resend_after,
+                limit,
+            )
+            stale_reviews = [
+                DueVocabularyReview.model_validate(_normalize_due_vocabulary_review_row(row))
+                for row in rows
+            ]
+            logger.info(
+                "Loaded stale pending vocabulary reviews",
+                extra={"event": "vocabulary_stale_pending_loaded", "stale_review_count": len(stale_reviews)},
+            )
+            return stale_reviews
 
     async def get_next_due_vocabulary_review_for_user(self, user_id: str) -> DueVocabularyReview | None:
         """Return the next due vocabulary review for a specific user, if any."""

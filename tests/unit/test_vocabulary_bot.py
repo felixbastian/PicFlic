@@ -47,6 +47,7 @@ class _FakePostgresDatabase:
     def __init__(self) -> None:
         self.user_calls: list[dict] = []
         self.due_reviews: list[DueVocabularyReview] = []
+        self.stale_reviews: list[DueVocabularyReview] = []
         self.mark_prompted_calls: list[str] = []
         self.prompt_reference: ReferencedVocabularyReview | None = None
         self.word_reference: ReferencedVocabularyReview | None = None
@@ -60,6 +61,9 @@ class _FakePostgresDatabase:
 
     async def list_due_vocabulary_reviews(self, limit: int = 100) -> list[DueVocabularyReview]:
         return self.due_reviews[:limit]
+
+    async def list_stale_vocabulary_review_reminders(self, limit: int = 100, resend_after=None) -> list[DueVocabularyReview]:
+        return self.stale_reviews[:limit]
 
     async def mark_vocabulary_review_prompted(self, vocabulary_id: str) -> None:
         self.mark_prompted_calls.append(vocabulary_id)
@@ -297,6 +301,58 @@ def test_dispatch_due_vocabulary_reviews_sends_one_prompt_per_due_review():
         }
     ]
     assert postgres_db.mark_prompted_calls == ["vocab-1"]
+
+
+def test_dispatch_due_vocabulary_reviews_resends_stale_pending_before_new_due_reviews():
+    application = _FakeApplication()
+    postgres_db = _FakePostgresDatabase()
+    postgres_db.stale_reviews = [
+        DueVocabularyReview(
+            vocabulary_id="vocab-stale",
+            user_id="user-1",
+            telegram_user_id=42,
+            french_word="aller",
+            english_description="to go",
+            current_review_stage="day",
+            next_review_at="2026-03-23T10:00:00",
+        )
+    ]
+    postgres_db.due_reviews = [
+        DueVocabularyReview(
+            vocabulary_id="vocab-due",
+            user_id="user-2",
+            telegram_user_id=77,
+            french_word="bonjour",
+            english_description="hello",
+            current_review_stage="day",
+            next_review_at="2026-03-23T10:05:00",
+        )
+    ]
+
+    sent_count = asyncio.run(dispatch_due_vocabulary_reviews(application, postgres_db, limit=2))
+
+    assert sent_count == 2
+    assert application.bot.sent_messages == [
+        {
+            "chat_id": 42,
+            "text": (
+                "Vocabulary review:\n"
+                "What is the French word for:\nto go\n\n"
+                "Reply with the French word. Reply 'p' or 'pass' to count it as wrong right away. "
+                "Reply 'shelf' if you want me to stop reviewing this word."
+            ),
+        },
+        {
+            "chat_id": 77,
+            "text": (
+                "Vocabulary review:\n"
+                "What is the French word for:\nhello\n\n"
+                "Reply with the French word. Reply 'p' or 'pass' to count it as wrong right away. "
+                "Reply 'shelf' if you want me to stop reviewing this word."
+            ),
+        },
+    ]
+    assert postgres_db.mark_prompted_calls == ["vocab-stale", "vocab-due"]
 
 
 def test_handle_message_shelves_quoted_review_prompt_after_answer():
