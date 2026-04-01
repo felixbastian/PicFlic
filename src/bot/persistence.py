@@ -52,11 +52,13 @@ async def persist_result(
     logger.info("Persisting workflow result", extra={"event": "workflow_result_persist", "task_type": task_type})
 
     if task_type == "expense":
-        await postgres_db.store_expense(user_id, ExpenseAnalysis.model_validate(analysis))
+        expense_id = await postgres_db.store_expense(user_id, ExpenseAnalysis.model_validate(analysis))
+        result["expense_id"] = expense_id
         return "Expense added to the database."
 
     if task_type == "recipe":
-        await postgres_db.store_dish(user_id, RecipeAnalysis.model_validate(analysis))
+        dish_id = await postgres_db.store_dish(user_id, RecipeAnalysis.model_validate(analysis))
+        result["dish_id"] = dish_id
         return "Recipe added to your collection."
 
     meal_id = await postgres_db.store_consumption(

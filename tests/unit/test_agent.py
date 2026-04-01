@@ -71,6 +71,20 @@ def _mock_nutrition_text_analysis(text: str, metadata: dict | None = None) -> Nu
     )
 
 
+def _mock_revised_nutrition_analysis(
+    correction_text: str,
+    previous_analysis: NutritionAnalysis | dict,
+) -> NutritionAnalysis:
+    return NutritionAnalysis(
+        ingredients=[{"name": "beer", "amount": "330 ml", "calories": 110.0}],
+        category="drink",
+        calories=110.0,
+        macros=MacroBreakdown(carbs=9.0, protein=1.0, fat=0.0),
+        tags=["alcoholic"],
+        alcohol_units=1.0,
+    )
+
+
 def test_process_image_routes_to_nutrition_and_stores_record(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "src.agents.main_agent.route_image_task",
@@ -298,6 +312,64 @@ def test_process_text_routes_to_nutrition_tracking_and_stores_record(tmp_path, m
     assert record.image_path == "text://2 croissants"
     assert record.analysis.calories == 460.0
     assert record.analysis.category == "food"
+
+
+def test_process_text_routes_to_nutrition_correction(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agents.main_agent.route_text_workflow",
+        lambda text, metadata=None: TextRoutingDecision(workflow_type="nutrition_correction"),
+    )
+    monkeypatch.setattr("src.agents.main_agent.revise_nutrition_analysis", _mock_revised_nutrition_analysis)
+    agent = PictoAgent(SqliteDatabase(tmp_path / "records.db"))
+
+    result = agent.process_text(
+        "Actually it was a small beer",
+        metadata={
+            "latest_nutrition_result": {
+                "record_id": "meal-123",
+                "meal_id": "meal-123",
+                "analysis": {
+                    "ingredients": [{"name": "beer", "amount": "500 ml", "calories": 150.0}],
+                    "category": "drink",
+                    "calories": 150.0,
+                    "macros": {"carbs": 12.0, "protein": 1.0, "fat": 0.0},
+                    "tags": ["alcoholic"],
+                    "alcohol_units": 1.5,
+                },
+            }
+        },
+    )
+
+    assert result["workflow_type"] == "nutrition_correction"
+    assert result["task_type"] == "nutrition"
+    assert result["record_id"] == "meal-123"
+    assert result["meal_id"] == "meal-123"
+    assert result["analysis"]["calories"] == 110.0
+    assert agent.list_records() == []
+
+
+def test_process_text_routes_to_delete_latest_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agents.main_agent.route_text_workflow",
+        lambda text, metadata=None: TextRoutingDecision(workflow_type="delete_latest_entry"),
+    )
+    agent = PictoAgent(SqliteDatabase(tmp_path / "records.db"))
+
+    result = agent.process_text(
+        "Actually that should not count",
+        metadata={
+            "latest_tracking_result": {
+                "task_type": "expense",
+                "record_id": "record-123",
+                "expense_id": "expense-123",
+            }
+        },
+    )
+
+    assert result["workflow_type"] == "delete_latest_entry"
+    assert result["task_type"] == "expense"
+    assert result["record_id"] == "record-123"
+    assert result["expense_id"] == "expense-123"
 
 
 def test_process_text_routes_to_vocabulary(tmp_path, monkeypatch):

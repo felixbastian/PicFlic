@@ -3,7 +3,12 @@ from types import SimpleNamespace
 from src.config import AppConfig
 from src.models import NutritionAnalysis, NutritionCorrectionResult
 from src.openai_schema import build_strict_openai_schema
-from src.utils import analyze_nutrition_image, analyze_nutrition_text, correct_nutrition_analysis
+from src.utils import (
+    analyze_nutrition_image,
+    analyze_nutrition_text,
+    correct_nutrition_analysis,
+    revise_nutrition_analysis,
+)
 
 
 def test_nutrition_schema_lists_ingredients_first():
@@ -283,3 +288,47 @@ def test_correct_nutrition_analysis_prompt_requires_same_dish_for_corrections(mo
     assert "Examples that are not corrections" in captured["prompt"]
     assert "'2 croissants'" in captured["prompt"]
     assert "User correction message: 2 croissants" in captured["user_text"]
+
+
+def test_revise_nutrition_analysis_uses_only_last_message_and_previous_entry(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def _fake_call_text_with_schema(prompt, user_text, response_model, response_name):
+        captured["prompt"] = prompt
+        captured["user_text"] = user_text
+        captured["response_name"] = response_name
+        return NutritionAnalysis.model_validate(
+            {
+                "ingredients": [{"name": "beer", "amount": "330 ml", "calories": 110.0}],
+                "category": "drink",
+                "calories": 110.0,
+                "item_count": 1,
+                "macros": {"carbs": 9.0, "protein": 1.0, "fat": 0.0},
+                "tags": ["alcoholic"],
+                "alcohol_units": 1.0,
+            }
+        )
+
+    monkeypatch.setattr("src.utils._call_text_with_schema", _fake_call_text_with_schema)
+
+    previous = NutritionAnalysis.model_validate(
+        {
+            "ingredients": [{"name": "beer", "amount": "500 ml", "calories": 150.0}],
+            "category": "drink",
+            "calories": 150.0,
+            "item_count": 1,
+            "macros": {"carbs": 12.0, "protein": 1.0, "fat": 0.0},
+            "tags": ["alcoholic"],
+            "alcohol_units": 1.5,
+        }
+    )
+
+    result = revise_nutrition_analysis("Actually it was 330 ml", previous)
+
+    assert result.calories == 110.0
+    assert result.ingredients[0].amount == "330 ml"
+    assert captured["response_name"] == "nutrition_revision"
+    assert "main router has already determined" in captured["prompt"].lower()
+    assert "User correction message: Actually it was 330 ml" in captured["user_text"]
+    assert "Previous nutrition analysis:" in captured["user_text"]
+    assert "Metadata:" not in captured["user_text"]

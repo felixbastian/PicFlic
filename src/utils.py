@@ -138,6 +138,38 @@ def analyze_nutrition_text(text: str, metadata: Dict[str, Any] | None = None) ->
     return _normalize_text_nutrition_analysis(analysis)
 
 
+def revise_nutrition_analysis(
+    correction_text: str,
+    previous_analysis: NutritionAnalysis | Dict[str, Any],
+) -> NutritionAnalysis:
+    """Revise the previous nutrition entry after routing has already chosen correction mode."""
+    previous = previous_analysis
+    if isinstance(previous_analysis, dict):
+        previous = NutritionAnalysis.model_validate(previous_analysis)
+
+    prompt = (
+        "You are a nutrition tracking assistant revising the user's most recent tracked food or drink entry. "
+        "The main router has already determined that the new message is a correction for that same tracked item. "
+        "Use the last user message to produce a fully revised nutrition analysis for the previous entry. "
+        "The revised analysis must include ingredients first, with each ingredient name limited to at most 2 words. "
+        "Each amount should stay compact, for example 6 pieces, 120 g, 250 ml, or ~25 g, and should use ~ instead "
+        "of words like about or approximately. "
+        "Keep the ingredients list and each ingredient's calories scoped to one item. "
+        "Keep the top-level calories, macros, and alcohol_units scoped to one item as well. "
+        "Use item_count to reflect how many copies of the same tracked item the entry represents. "
+        "Preserve the previous item_count when the correction only changes what one item was like, and revise "
+        "item_count only when the user's message explicitly changes the number of items. "
+        "Use item_count=1 when there is only one item. "
+        "Return only the fully revised structured result."
+    )
+    user_text = (
+        f"User correction message: {correction_text}\n"
+        f"Previous nutrition analysis: {json.dumps(previous.to_dict(), ensure_ascii=False)}"
+    )
+    revised = _call_text_with_schema(prompt, user_text, NutritionAnalysis, "nutrition_revision")
+    return _normalize_corrected_nutrition_analysis(correction_text, previous, revised)
+
+
 def analyze_expense_receipt(image_path: str, metadata: Dict[str, Any] | None = None) -> ExpenseAnalysis:
     """Analyze a receipt image and extract the expense details."""
     categories = ", ".join(EXPENSE_CATEGORIES)
