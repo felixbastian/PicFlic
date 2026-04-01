@@ -31,12 +31,22 @@ _STAGE_LABELS: dict[VocabularyReviewStage, str] = {
 }
 _SHELF_KEYWORDS = {"shelf", "shelve", "archive", "skip", "pause", "stop"}
 _PASS_KEYWORDS = {"p", "pass"}
+_APOSTROPHE_VARIANTS = {
+    "\u2019": "'",
+    "\u2018": "'",
+    "\u02bc": "'",
+    "\u2032": "'",
+    "\u00b4": "'",
+    "`": "'",
+}
 logger = logging.getLogger(__name__)
 
 
 def normalize_review_text(value: str) -> str:
     """Normalize French vocabulary answers for tolerant matching."""
     lowered = value.strip().lower()
+    for variant, replacement in _APOSTROPHE_VARIANTS.items():
+        lowered = lowered.replace(variant, replacement)
     decomposed = unicodedata.normalize("NFKD", lowered)
     without_accents = "".join(char for char in decomposed if not unicodedata.combining(char))
     cleaned = re.sub(r"[^a-z0-9'\-\s]", " ", without_accents)
