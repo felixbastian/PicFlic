@@ -23,14 +23,18 @@ logger = logging.getLogger(__name__)
 
 
 def route_text_workflow(text: str, metadata: dict[str, Any] | None = None) -> TextRoutingDecision:
-    """Route a text message to echo, query, or vocabulary workflows."""
+    """Route a text message to the appropriate tracking or assistant workflow."""
     today = date.today().isoformat()
     prompt = (
         "You are an orchestrator for a personal tracking assistant. "
         "Choose workflow_type='expense_query' when the user asks about expenses, receipts, spending, money, "
         "monthly totals, categories, groceries, or similar historical spending questions. "
-        "Choose workflow_type='nutrition_query' when the user asks about calories, meals, drinks, alcohol, or "
-        "historical nutrition tracking data. "
+        "Choose workflow_type='nutrition_query' when the user asks about previously tracked calories, meals, "
+        "drinks, alcohol, or historical nutrition tracking data. "
+        "Choose workflow_type='nutrition_tracking' when the user is logging or describing a food or drink to "
+        "estimate and track right now, for example messages like '2 croissants', 'beer 500 ml', 'I had a chicken "
+        "salad', or '1 glass of wine'. Use this for standalone food or drink descriptions even when they mention "
+        "amounts. Do not use workflow_type='nutrition_query' for a new food or drink entry that should be logged. "
         "Choose workflow_type='vocabulary' when the user gives a French word or short phrase and wants its English "
         "meaning, or when the user asks a follow-up question about vocabulary that was discussed in the recent "
         "conversation history. A standalone French word or short French phrase like 'bonjour' should be treated as "

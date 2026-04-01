@@ -58,7 +58,7 @@ def remember_text_turn(
 
 
 def remember_latest_nutrition_result(context: ContextTypes.DEFAULT_TYPE, result: Mapping[str, Any]) -> None:
-    """Store the latest nutrition photo result so a follow-up text can correct it."""
+    """Store the latest nutrition result so a follow-up text can correct it."""
     user_data = getattr(context, "user_data", None)
     if not isinstance(user_data, dict):
         return
@@ -76,7 +76,7 @@ def remember_latest_nutrition_result(context: ContextTypes.DEFAULT_TYPE, result:
 
 
 def get_latest_nutrition_result(context: ContextTypes.DEFAULT_TYPE) -> dict[str, Any] | None:
-    """Return the last nutrition photo result stored for follow-up corrections."""
+    """Return the last nutrition result stored for follow-up corrections."""
     user_data = getattr(context, "user_data", None)
     if not isinstance(user_data, dict):
         return None

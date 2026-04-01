@@ -17,7 +17,13 @@ from ..query_utils import (
     build_vocabulary_response,
     route_text_workflow,
 )
-from ..utils import analyze_expense_receipt, analyze_nutrition_image, analyze_recipe_image, route_image_task
+from ..utils import (
+    analyze_expense_receipt,
+    analyze_nutrition_image,
+    analyze_nutrition_text,
+    analyze_recipe_image,
+    route_image_task,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +40,9 @@ class _TextState(TypedDict):
     text: str
     metadata: Dict[str, Any]
     workflow_type: NotRequired[str]
+    task_type: NotRequired[TrackingTaskType]
+    analysis: NotRequired[Dict[str, Any]]
+    record_id: NotRequired[str]
     explanation: NotRequired[str]
     sql_query: NotRequired[str]
     response_template: NotRequired[str]
@@ -112,13 +121,7 @@ def _next_image_step(state: _ImageState) -> str:
 def _store_image_record(state: _ImageState, runtime: Any) -> dict:
     db: SqliteDatabase = runtime.context["db"]
     task_type = state["task_type"]
-    if task_type == "expense":
-        analysis = ExpenseAnalysis.model_validate(state["analysis"])
-    elif task_type == "recipe":
-        analysis = RecipeAnalysis.model_validate(state["analysis"])
-    else:
-        analysis = NutritionAnalysis.model_validate(state["analysis"])
-    record = ImageRecord.from_analysis(state["image_path"], task_type, analysis)
+    record = _store_tracking_record(state["image_path"], task_type, state["analysis"])
     db.store_record(record)
     logger.info(
         "Stored image workflow record",
@@ -172,6 +175,40 @@ def _build_nutrition_text_query(state: _TextState, runtime: Any) -> dict:
     return plan.model_dump()
 
 
+def _analyze_nutrition_text(state: _TextState, runtime: Any) -> dict:
+    analysis = analyze_nutrition_text(state["text"], state.get("metadata"))
+    logger.info(
+        "Completed nutrition text analysis node",
+        extra={"event": "agent_nutrition_text_analysis", "analysis": analysis.to_dict()},
+    )
+    return {
+        "workflow_type": "nutrition_tracking",
+        "task_type": "nutrition",
+        "analysis": analysis.to_dict(),
+    }
+
+
+def _store_nutrition_text_record(state: _TextState, runtime: Any) -> dict:
+    db: SqliteDatabase = runtime.context["db"]
+    record = _store_tracking_record(_build_text_record_source(state["text"]), "nutrition", state["analysis"])
+    db.store_record(record)
+    logger.info(
+        "Stored text nutrition workflow record",
+        extra={
+            "event": "agent_record_stored",
+            "record_id": record.id,
+            "task_type": "nutrition",
+            "workflow_type": "nutrition_tracking",
+        },
+    )
+    return {
+        "workflow_type": "nutrition_tracking",
+        "task_type": "nutrition",
+        "analysis": record.analysis.to_dict(),
+        "record_id": record.id,
+    }
+
+
 def _echo_text(state: _TextState, runtime: Any) -> dict:
     logger.info("Selected echo text workflow", extra={"event": "agent_echo_workflow"})
     return {"workflow_type": "echo"}
@@ -207,6 +244,29 @@ def _build_recipe_collection_text_response(state: _TextState, runtime: Any) -> d
     return result.model_dump()
 
 
+def _store_tracking_record(
+    source_reference: str,
+    task_type: TrackingTaskType,
+    analysis_payload: Dict[str, Any],
+) -> ImageRecord:
+    if task_type == "expense":
+        analysis = ExpenseAnalysis.model_validate(analysis_payload)
+    elif task_type == "recipe":
+        analysis = RecipeAnalysis.model_validate(analysis_payload)
+    else:
+        analysis = NutritionAnalysis.model_validate(analysis_payload)
+    return ImageRecord.from_analysis(source_reference, task_type, analysis)
+
+
+def _build_text_record_source(text: str) -> str:
+    normalized = " ".join(text.strip().split())
+    if not normalized:
+        return "text://nutrition-entry"
+    if len(normalized) > 180:
+        normalized = f"{normalized[:177].rstrip()}..."
+    return f"text://{normalized}"
+
+
 class MainAgent:
     """An agent that routes photos and text to the correct specialized workflow."""
 
@@ -238,6 +298,8 @@ class MainAgent:
         graph.add_node("route_text", _route_text)
         graph.add_node("build_expense_text_query", _build_expense_text_query)
         graph.add_node("build_nutrition_text_query", _build_nutrition_text_query)
+        graph.add_node("analyze_nutrition_text", _analyze_nutrition_text)
+        graph.add_node("store_nutrition_text_record", _store_nutrition_text_record)
         graph.add_node("build_vocabulary_text_response", _build_vocabulary_text_response)
         graph.add_node("build_recipe_collection_text_response", _build_recipe_collection_text_response)
         graph.add_node("echo_text", _echo_text)
@@ -248,14 +310,17 @@ class MainAgent:
             {
                 "expense_query": "build_expense_text_query",
                 "nutrition_query": "build_nutrition_text_query",
+                "nutrition_tracking": "analyze_nutrition_text",
                 "vocabulary": "build_vocabulary_text_response",
                 "recipe_collection": "build_recipe_collection_text_response",
                 "echo": "echo_text",
             },
         )
+        graph.add_edge("analyze_nutrition_text", "store_nutrition_text_record")
         graph.set_entry_point("load_text")
         graph.set_finish_point("build_expense_text_query")
         graph.set_finish_point("build_nutrition_text_query")
+        graph.set_finish_point("store_nutrition_text_record")
         graph.set_finish_point("build_vocabulary_text_response")
         graph.set_finish_point("build_recipe_collection_text_response")
         graph.set_finish_point("echo_text")

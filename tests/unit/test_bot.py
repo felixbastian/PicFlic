@@ -260,7 +260,7 @@ def test_start_replies_with_welcome_message():
     asyncio.run(start(update, SimpleNamespace()))
 
     assert message.replies == [
-        "Hi! Send me a photo of your food or a receipt, ask about your tracked expenses and nutrition, send me a French word to practice vocabulary, or tell me to save a recipe to your collection."
+        "Hi! Send me a photo of your food or a receipt, or just text what you ate or drank, ask about your tracked expenses and nutrition, send me a French word to practice vocabulary, or tell me to save a recipe to your collection."
     ]
 
 
@@ -635,6 +635,65 @@ def test_handle_message_runs_nutrition_text_query():
         "I am looking for all tracked calories in March 2026.",
         "You have consumed 1800 kcal of calories in March 2026.",
     ]
+
+
+def test_handle_message_tracks_nutrition_from_text():
+    message = _FakeMessage()
+    message.photo = []
+    message.text = "2 croissants"
+    agent = _FakeAgent(
+        text_result={
+            "workflow_type": "nutrition_tracking",
+            "task_type": "nutrition",
+            "record_id": "meal-text-123",
+            "analysis": {
+                "ingredients": [
+                    {"name": "croissant", "amount": "1 piece", "calories": 230.0},
+                ],
+                "category": "food",
+                "calories": 460.0,
+                "item_count": 2,
+                "macros": {"carbs": 52.0, "protein": 10.0, "fat": 24.0},
+                "tags": ["pastry"],
+                "alcohol_units": 0.0,
+            },
+        }
+    )
+    update = SimpleNamespace(
+        update_id=1014,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
+    postgres_db = _FakePostgresDatabase()
+
+    asyncio.run(handle_message(update, context, agent, postgres_db))
+
+    assert agent.image_calls == []
+    assert agent.text_calls[0]["text"] == "2 croissants"
+    assert postgres_db.consumption_calls[0]["meal_id"] == "meal-text-123"
+    assert postgres_db.consumption_calls[0]["analysis"].calories == 460.0
+    assert postgres_db.daily_calories_calls == ["user-123"]
+    latest_result = get_latest_nutrition_result(context)
+    assert latest_result is not None
+    assert latest_result["record_id"] == "meal-text-123"
+    assert latest_result["analysis"]["item_count"] == 2
+    assert message.replies == [
+        "<b>Ingredients</b>\n"
+        "- Croissant : 1 piece (230.0 kcal)\n"
+        "\n"
+        "<b>Amount:</b> 2\n"
+        "<b>Calories:</b> 2 * 230.0 = 460.0\n"
+        "<b>Tags:</b> pastry\n"
+        "\n"
+        "<b>Today total calories:</b> 1800"
+    ]
+    assert message.reply_kwargs == [{"parse_mode": ParseMode.HTML}]
 
 
 def test_handle_message_formats_multirow_query_results():
@@ -1339,4 +1398,3 @@ def test_remember_text_turn_keeps_recent_history_compact():
             "workflow": "vocabulary",
         },
     ]
-

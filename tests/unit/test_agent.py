@@ -59,6 +59,18 @@ def _mock_recipe_analysis(image_path: str, metadata: dict | None = None) -> Reci
     )
 
 
+def _mock_nutrition_text_analysis(text: str, metadata: dict | None = None) -> NutritionAnalysis:
+    return NutritionAnalysis(
+        ingredients=[{"name": "croissant", "amount": "1 piece", "calories": 230.0}],
+        category="food",
+        calories=460.0,
+        item_count=2,
+        macros=MacroBreakdown(carbs=52.0, protein=10.0, fat=24.0),
+        tags=["pastry"],
+        alcohol_units=0.0,
+    )
+
+
 def test_process_image_routes_to_nutrition_and_stores_record(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "src.agents.main_agent.route_image_task",
@@ -262,6 +274,30 @@ def test_process_text_routes_to_nutrition_query(tmp_path, monkeypatch):
     assert result["workflow_type"] == "nutrition_query"
     assert "tracked calories" in result["explanation"]
     assert "fact_consumption" in result["sql_query"]
+
+
+def test_process_text_routes_to_nutrition_tracking_and_stores_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agents.main_agent.route_text_workflow",
+        lambda text, metadata=None: TextRoutingDecision(workflow_type="nutrition_tracking"),
+    )
+    monkeypatch.setattr("src.agents.main_agent.analyze_nutrition_text", _mock_nutrition_text_analysis)
+    agent = PictoAgent(SqliteDatabase(tmp_path / "records.db"))
+
+    result = agent.process_text("2 croissants")
+
+    assert result["workflow_type"] == "nutrition_tracking"
+    assert result["task_type"] == "nutrition"
+    assert result["record_id"]
+    assert result["analysis"]["calories"] == 460.0
+    assert result["analysis"]["item_count"] == 2
+
+    record = agent.get_record(result["record_id"])
+    assert record is not None
+    assert record.task_type == "nutrition"
+    assert record.image_path == "text://2 croissants"
+    assert record.analysis.calories == 460.0
+    assert record.analysis.category == "food"
 
 
 def test_process_text_routes_to_vocabulary(tmp_path, monkeypatch):

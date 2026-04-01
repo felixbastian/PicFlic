@@ -112,6 +112,32 @@ def analyze_nutrition_image(image_path: str, metadata: Dict[str, Any] | None = N
     return _apply_item_count_to_nutrition_analysis(analysis, item_count)
 
 
+def analyze_nutrition_text(text: str, metadata: Dict[str, Any] | None = None) -> NutritionAnalysis:
+    """Analyze a text-only food or drink entry and return a validated nutrition record."""
+    prompt = (
+        "You are a nutrition tracking assistant. "
+        "The user is providing a text description of food or drink to track, not a photo. "
+        "First fill the ingredients field with the food or drink broken into likely ingredients or components. "
+        "Each ingredient name must be short and use at most 2 words. "
+        "For each ingredient, estimate the amount from the user's text. "
+        "Keep each amount short and compact, for example 6 pieces, 120 g, 250 ml, or ~25 g. "
+        "Prefer counts when they are explicit. Use ~ instead of words like about or approximately. "
+        "For each ingredient, estimate that ingredient's calories for the stated amount. "
+        "Keep the ingredients list and each ingredient's calories scoped to one item when the user clearly refers "
+        "to multiple identical items, and use item_count to represent how many copies were consumed. "
+        "Keep the top-level calories, macros, and alcohol_units scoped to one item as well when item_count > 1. "
+        "If the user describes a mixed meal with different components, keep item_count=1 and represent the full meal "
+        "through the ingredients list instead of forcing a multiplier. "
+        "Estimate the entry's category, macros, tags, and alcohol units based on the same ingredient-level estimate. "
+        "Return only the structured result. "
+        "If the text is vague, make the best conservative estimate and use category='unknown' when needed. "
+        "Tags should describe the overall meal or drink."
+    )
+    user_text = _build_text_nutrition_user_text(text, metadata or {})
+    analysis = _call_text_with_schema(prompt, user_text, NutritionAnalysis, "nutrition_text_analysis")
+    return _normalize_text_nutrition_analysis(analysis)
+
+
 def analyze_expense_receipt(image_path: str, metadata: Dict[str, Any] | None = None) -> ExpenseAnalysis:
     """Analyze a receipt image and extract the expense details."""
     categories = ", ".join(EXPENSE_CATEGORIES)
@@ -137,10 +163,22 @@ def correct_nutrition_analysis(
 
     prompt = (
         "You are a nutrition tracking assistant handling a follow-up message about the user's most recent food or "
-        "drink photo analysis. "
+        "drink entry. "
+        "The previous nutrition analysis may have come from a photo or from a text-only log. "
         "Decide whether the new message is meant to correct or clarify the previous nutrition analysis. "
+        "Only treat the message as a correction when it is clearly still about that same previously tracked dish or "
+        "drink. "
         "Treat messages that change ingredients, amounts, portion sizes, preparation method, toppings, or drink size "
         "as corrections. "
+        "If the message introduces a different dish, a different drink, a new meal, a second item, dessert, or a "
+        "new standalone food log, do not treat it as a correction. Those should be handled as new nutrition entries "
+        "instead. "
+        "When the food or drink being described is different from the previous entry, return apply_correction=false "
+        "and analysis=null even if the message contains quantities, ingredients, or calories. "
+        "Examples of corrections: 'actually it was a small beer', 'add cheese to that pizza', 'it was 2 croissants "
+        "not 3'. "
+        "Examples that are not corrections: 'I also had pasta', 'for dessert I had ice cream', '2 croissants', "
+        "'beer 500 ml' when the previous entry was a pizza. "
         "Do not treat casual replies, unrelated questions, or new standalone requests as corrections. "
         "If the message is a correction, return apply_correction=true and provide a fully revised nutrition analysis. "
         "The revised analysis must include ingredients first, with each ingredient name limited to at most 2 words. "
@@ -148,7 +186,7 @@ def correct_nutrition_analysis(
         "of words like about or approximately. "
         "Keep the ingredients list and each ingredient's calories scoped to one item. "
         "Keep the top-level calories, macros, and alcohol_units scoped to one item as well. "
-        "Use item_count to reflect how many copies of the same pictured item the entry represents. "
+        "Use item_count to reflect how many copies of the same tracked item the entry represents. "
         "Preserve the previous item_count when the correction only changes what one item was like, and revise "
         "item_count only when the user's message explicitly changes the number of items. "
         "Use item_count=1 when there is only one item. "
@@ -289,6 +327,15 @@ def _build_image_user_text(image_path: str, metadata: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _build_text_nutrition_user_text(text: str, metadata: Dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            f"User message: {text.strip()}",
+            f"Metadata: {json.dumps(metadata, ensure_ascii=False)}",
+        ]
+    )
+
+
 def _extract_image_user_note(metadata: Dict[str, Any]) -> str | None:
     for key in _IMAGE_TEXT_METADATA_KEYS:
         value = metadata.pop(key, None)
@@ -346,6 +393,16 @@ def _apply_item_count_to_nutrition_analysis(
     item_count: int,
 ) -> NutritionAnalysis:
     return _rescale_nutrition_analysis_totals(analysis, from_count=1, to_count=item_count)
+
+
+def _normalize_text_nutrition_analysis(analysis: NutritionAnalysis) -> NutritionAnalysis:
+    effective_count = max(1, int(analysis.item_count))
+    source_count = _infer_analysis_total_item_count(analysis, effective_count)
+    return _rescale_nutrition_analysis_totals(
+        analysis,
+        from_count=source_count,
+        to_count=effective_count,
+    )
 
 
 def _normalize_corrected_nutrition_analysis(
