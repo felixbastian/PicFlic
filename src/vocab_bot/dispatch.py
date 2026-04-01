@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 
 from telegram.ext import Application
 
@@ -19,9 +20,21 @@ async def dispatch_due_vocabulary_reviews(
     postgres_db: PostgresDatabase,
     limit: int = 100,
 ) -> int:
-    """Send due vocabulary review prompts via the dedicated vocabulary bot."""
-    due_reviews = await postgres_db.list_due_vocabulary_reviews(limit=limit)
+    """Send stale pending reminders first, then new due vocabulary review prompts."""
     sent_count = 0
+    stale_reviews = await postgres_db.list_stale_vocabulary_review_reminders(
+        limit=limit,
+        resend_after=timedelta(hours=1),
+    )
+    for review in stale_reviews:
+        if await send_vocabulary_review_prompt(application, postgres_db, review):
+            sent_count += 1
+
+    remaining_limit = max(limit - sent_count, 0)
+    if remaining_limit == 0:
+        return sent_count
+
+    due_reviews = await postgres_db.list_due_vocabulary_reviews(limit=remaining_limit)
     for review in due_reviews:
         if await send_vocabulary_review_prompt(application, postgres_db, review):
             sent_count += 1
@@ -33,7 +46,7 @@ async def send_vocabulary_review_prompt(
     postgres_db: PostgresDatabase,
     review: DueVocabularyReview,
 ) -> bool:
-    """Send a single vocabulary review prompt and mark it as awaiting an answer."""
+    """Send or resend a single vocabulary review prompt."""
     context_token = bind_log_context(
         process_id=get_log_context().get("process_id") or generate_process_id("vocab-review"),
         user_id=review.user_id,
@@ -43,8 +56,8 @@ async def send_vocabulary_review_prompt(
     )
     try:
         prompt = build_review_prompt(review)
-        await application.bot.send_message(chat_id=review.telegram_user_id, text=prompt)
         await postgres_db.mark_vocabulary_review_prompted(review.vocabulary_id)
+        await application.bot.send_message(chat_id=review.telegram_user_id, text=prompt)
         logger.info(
             "Sent vocabulary review prompt",
             extra={

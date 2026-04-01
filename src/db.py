@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
@@ -21,6 +22,7 @@ from .models import (
     VocabularyReviewStage,
 )
 from .mcp import DatabaseMCPAdapter
+from .vocabulary_review import normalize_review_text
 
 logger = logging.getLogger(__name__)
 
@@ -597,6 +599,53 @@ class PostgresDatabase:
             )
             return due_reviews
 
+    async def list_stale_vocabulary_review_reminders(
+        self,
+        limit: int = 100,
+        resend_after: timedelta = timedelta(hours=1),
+    ) -> list[DueVocabularyReview]:
+        """Return at most one stale pending vocabulary review per user for reminder delivery."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT ON (v.user_id)
+                    v.vocabulary_id,
+                    v.user_id,
+                    u.telegram_user_id,
+                    v.french_word,
+                    v.english_description,
+                    v.current_review_stage,
+                    v.next_review_at
+                FROM fact_vocabulary v
+                JOIN dim_user u ON u.user_id = v.user_id
+                WHERE v.finished = FALSE
+                  AND v.shelf = FALSE
+                  AND v.awaiting_review = TRUE
+                  AND (
+                      v.last_review_prompted_at IS NULL
+                      OR v.last_review_prompted_at <= CURRENT_TIMESTAMP - $1::INTERVAL
+                  )
+                  AND u.telegram_user_id IS NOT NULL
+                  AND COALESCE(u.has_vocab_bot_activated, FALSE) = TRUE
+                ORDER BY v.user_id, v.last_review_prompted_at ASC NULLS FIRST, v.created_at ASC
+                LIMIT $2
+                """,
+                resend_after,
+                limit,
+            )
+            stale_reviews = [
+                DueVocabularyReview.model_validate(_normalize_due_vocabulary_review_row(row))
+                for row in rows
+            ]
+            logger.info(
+                "Loaded stale pending vocabulary reviews",
+                extra={"event": "vocabulary_stale_pending_loaded", "stale_review_count": len(stale_reviews)},
+            )
+            return stale_reviews
+
     async def get_next_due_vocabulary_review_for_user(self, user_id: str) -> DueVocabularyReview | None:
         """Return the next due vocabulary review for a specific user, if any."""
         if not self._pool:
@@ -734,6 +783,49 @@ class PostgresDatabase:
         for row in rows:
             reference = ReferencedVocabularyReview.model_validate(_normalize_due_vocabulary_review_row(row))
             if build_review_prompt_text(reference.english_description) == normalized_prompt:
+                return reference
+
+        return None
+
+    async def get_recent_prompted_vocabulary_review_by_french_word(
+        self,
+        telegram_user_id: int,
+        french_word: str,
+        limit: int = 25,
+    ) -> ReferencedVocabularyReview | None:
+        """Resolve a quoted bot feedback message back to a recent vocabulary item by its French word."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        normalized_word = normalize_review_text(french_word)
+        if not normalized_word:
+            return None
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    v.vocabulary_id,
+                    v.user_id,
+                    u.telegram_user_id,
+                    v.french_word,
+                    v.english_description
+                FROM fact_vocabulary v
+                JOIN dim_user u ON u.user_id = v.user_id
+                WHERE u.telegram_user_id = $1
+                  AND v.last_review_prompted_at IS NOT NULL
+                  AND v.shelf = FALSE
+                  AND COALESCE(u.has_vocab_bot_activated, FALSE) = TRUE
+                ORDER BY v.last_review_prompted_at DESC NULLS LAST, v.created_at DESC
+                LIMIT $2
+                """,
+                telegram_user_id,
+                limit,
+            )
+
+        for row in rows:
+            reference = ReferencedVocabularyReview.model_validate(_normalize_due_vocabulary_review_row(row))
+            if normalize_review_text(reference.french_word) == normalized_word:
                 return reference
 
         return None

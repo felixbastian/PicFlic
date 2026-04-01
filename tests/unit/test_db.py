@@ -156,6 +156,62 @@ def test_get_recent_prompted_vocabulary_review_by_prompt_matches_prompt_text():
     assert params == (42, 25)
 
 
+def test_get_recent_prompted_vocabulary_review_by_french_word_matches_recent_word():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+    db._pool.connection.fetch_result = [
+        {
+            "vocabulary_id": "vocab-1",
+            "user_id": "user-123",
+            "telegram_user_id": 42,
+            "french_word": "accru, accroître",
+            "english_description": "to increase",
+        }
+    ]
+
+    result = asyncio.run(
+        db.get_recent_prompted_vocabulary_review_by_french_word(
+            42,
+            "accru, accroître",
+        )
+    )
+
+    assert result is not None
+    assert result.vocabulary_id == "vocab-1"
+    calls = db._pool.connection.fetch_calls
+    assert len(calls) == 1
+    query, params = calls[0]
+    assert "last_review_prompted_at IS NOT NULL" in query
+    assert params == (42, 25)
+
+
+def test_list_stale_vocabulary_review_reminders_reads_pending_rows_ready_for_resend():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+    db._pool.connection.fetch_result = [
+        {
+            "vocabulary_id": "vocab-1",
+            "user_id": "user-123",
+            "telegram_user_id": 42,
+            "french_word": "aller",
+            "english_description": "to go",
+            "current_review_stage": "day",
+            "next_review_at": datetime(2026, 3, 23, 10, 0, 0),
+        }
+    ]
+
+    result = asyncio.run(db.list_stale_vocabulary_review_reminders())
+
+    assert len(result) == 1
+    assert result[0].vocabulary_id == "vocab-1"
+    calls = db._pool.connection.fetch_calls
+    assert len(calls) == 1
+    query, params = calls[0]
+    assert "v.awaiting_review = TRUE" in query
+    assert "v.last_review_prompted_at IS NULL" in query
+    assert params[1] == 100
+
+
 def test_update_consumption_updates_fact_row():
     db = PostgresDatabase()
     db._pool = _FakePool()
