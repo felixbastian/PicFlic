@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 from telegram import Update
@@ -15,6 +16,10 @@ from ..vocabulary_review import is_shelf_request
 from .dispatch import dispatch_next_due_vocabulary_review_for_user
 
 logger = logging.getLogger(__name__)
+_QUOTED_VOCAB_PATTERN = re.compile(
+    r'(?:The correct word is|The French word is)\s+"([^"]+)"',
+    re.IGNORECASE,
+)
 
 
 def _message_preview(update: Update) -> str | None:
@@ -167,6 +172,13 @@ async def _try_shelf_quoted_review(update: Update, postgres_db: PostgresDatabase
         quoted_prompt,
     )
     if reference is None:
+        quoted_french_word = _quoted_french_word(quoted_prompt)
+        if quoted_french_word is not None:
+            reference = await postgres_db.get_recent_prompted_vocabulary_review_by_french_word(
+                update.effective_user.id,
+                quoted_french_word,
+            )
+    if reference is None:
         logger.info(
             "Could not resolve quoted vocabulary review prompt for shelving",
             extra={
@@ -209,3 +221,10 @@ def _quoted_prompt_text(update: Update) -> str | None:
             return quote_text.strip()
 
     return None
+
+
+def _quoted_french_word(quoted_message: str) -> str | None:
+    match = _QUOTED_VOCAB_PATTERN.search(quoted_message)
+    if match is None:
+        return None
+    return match.group(1).strip()

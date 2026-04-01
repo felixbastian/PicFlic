@@ -49,7 +49,9 @@ class _FakePostgresDatabase:
         self.due_reviews: list[DueVocabularyReview] = []
         self.mark_prompted_calls: list[str] = []
         self.prompt_reference: ReferencedVocabularyReview | None = None
+        self.word_reference: ReferencedVocabularyReview | None = None
         self.prompt_lookup_calls: list[dict] = []
+        self.word_lookup_calls: list[dict] = []
         self.record_review_calls: list[dict] = []
 
     async def get_or_create_user(self, **kwargs) -> str:
@@ -82,6 +84,21 @@ class _FakePostgresDatabase:
             }
         )
         return self.prompt_reference
+
+    async def get_recent_prompted_vocabulary_review_by_french_word(
+        self,
+        telegram_user_id: int,
+        french_word: str,
+        limit: int = 25,
+    ) -> ReferencedVocabularyReview | None:
+        self.word_lookup_calls.append(
+            {
+                "telegram_user_id": telegram_user_id,
+                "french_word": french_word,
+                "limit": limit,
+            }
+        )
+        return self.word_reference
 
     async def record_vocabulary_review_result(self, vocabulary_id: str, correct: bool = False, shelved: bool = False):
         self.record_review_calls.append(
@@ -322,6 +339,109 @@ def test_handle_message_shelves_quoted_review_prompt_after_answer():
     assert postgres_db.record_review_calls == [
         {
             "vocabulary_id": "vocab-9",
+            "correct": False,
+            "shelved": True,
+        }
+    ]
+    assert agent.calls == []
+    assert message.replies == ['Okay, I shelved "aller" for you.']
+
+
+def test_handle_message_shelves_quoted_wrong_answer_feedback_by_french_word():
+    quoted_feedback = 'Not quite. The correct word is "accru, accroître". I will ask you again tomorrow.'
+    message = _FakeMessage(
+        text="shelf",
+        reply_to_message=SimpleNamespace(text=quoted_feedback),
+    )
+    update = SimpleNamespace(
+        update_id=4004,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    application = _FakeApplication()
+    context = SimpleNamespace(application=application)
+    postgres_db = _FakePostgresDatabase()
+    postgres_db.word_reference = ReferencedVocabularyReview(
+        vocabulary_id="vocab-10",
+        user_id="user-123",
+        telegram_user_id=42,
+        french_word="accru, accroître",
+        english_description="to increase",
+    )
+    agent = _FakeVocabularyAgent()
+
+    asyncio.run(handle_message(update, context, agent, postgres_db))
+
+    assert postgres_db.prompt_lookup_calls == [
+        {
+            "telegram_user_id": 42,
+            "prompt_text": quoted_feedback,
+            "limit": 25,
+        }
+    ]
+    assert postgres_db.word_lookup_calls == [
+        {
+            "telegram_user_id": 42,
+            "french_word": "accru, accroître",
+            "limit": 25,
+        }
+    ]
+    assert postgres_db.record_review_calls == [
+        {
+            "vocabulary_id": "vocab-10",
+            "correct": False,
+            "shelved": True,
+        }
+    ]
+    assert agent.calls == []
+    assert message.replies == ['Okay, I shelved "accru, accroître" for you.']
+
+
+def test_handle_message_shelves_quoted_correct_answer_feedback_by_french_word():
+    quoted_feedback = 'Correct. The French word is "aller". I will ask you again in 3 days.'
+    message = _FakeMessage(
+        text="shelf",
+        reply_to_message=SimpleNamespace(text=quoted_feedback),
+    )
+    update = SimpleNamespace(
+        update_id=4005,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    application = _FakeApplication()
+    context = SimpleNamespace(application=application)
+    postgres_db = _FakePostgresDatabase()
+    postgres_db.word_reference = ReferencedVocabularyReview(
+        vocabulary_id="vocab-11",
+        user_id="user-123",
+        telegram_user_id=42,
+        french_word="aller",
+        english_description="to go",
+    )
+    agent = _FakeVocabularyAgent()
+
+    asyncio.run(handle_message(update, context, agent, postgres_db))
+
+    assert postgres_db.word_lookup_calls == [
+        {
+            "telegram_user_id": 42,
+            "french_word": "aller",
+            "limit": 25,
+        }
+    ]
+    assert postgres_db.record_review_calls == [
+        {
+            "vocabulary_id": "vocab-11",
             "correct": False,
             "shelved": True,
         }

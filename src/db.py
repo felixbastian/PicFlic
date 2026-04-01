@@ -21,6 +21,7 @@ from .models import (
     VocabularyReviewStage,
 )
 from .mcp import DatabaseMCPAdapter
+from .vocabulary_review import normalize_review_text
 
 logger = logging.getLogger(__name__)
 
@@ -734,6 +735,49 @@ class PostgresDatabase:
         for row in rows:
             reference = ReferencedVocabularyReview.model_validate(_normalize_due_vocabulary_review_row(row))
             if build_review_prompt_text(reference.english_description) == normalized_prompt:
+                return reference
+
+        return None
+
+    async def get_recent_prompted_vocabulary_review_by_french_word(
+        self,
+        telegram_user_id: int,
+        french_word: str,
+        limit: int = 25,
+    ) -> ReferencedVocabularyReview | None:
+        """Resolve a quoted bot feedback message back to a recent vocabulary item by its French word."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        normalized_word = normalize_review_text(french_word)
+        if not normalized_word:
+            return None
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    v.vocabulary_id,
+                    v.user_id,
+                    u.telegram_user_id,
+                    v.french_word,
+                    v.english_description
+                FROM fact_vocabulary v
+                JOIN dim_user u ON u.user_id = v.user_id
+                WHERE u.telegram_user_id = $1
+                  AND v.last_review_prompted_at IS NOT NULL
+                  AND v.shelf = FALSE
+                  AND COALESCE(u.has_vocab_bot_activated, FALSE) = TRUE
+                ORDER BY v.last_review_prompted_at DESC NULLS LAST, v.created_at DESC
+                LIMIT $2
+                """,
+                telegram_user_id,
+                limit,
+            )
+
+        for row in rows:
+            reference = ReferencedVocabularyReview.model_validate(_normalize_due_vocabulary_review_row(row))
+            if normalize_review_text(reference.french_word) == normalized_word:
                 return reference
 
         return None
