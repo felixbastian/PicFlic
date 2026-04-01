@@ -41,7 +41,7 @@ async def try_apply_latest_nutrition_correction(
     postgres_db: Optional[PostgresDatabase],
     incoming_text: str,
 ) -> bool:
-    """Apply a follow-up nutrition correction when the text clearly revises the last photo analysis."""
+    """Apply a follow-up nutrition correction when the text clearly revises the last nutrition entry."""
     latest_result = get_latest_nutrition_result(context)
     if latest_result is None:
         return False

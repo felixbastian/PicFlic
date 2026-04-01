@@ -15,6 +15,7 @@ RECENT_HISTORY_LIMIT = 3
 LAST_NUTRITION_RESULT_KEY = "_picflic_last_nutrition_result"
 VOCAB_BOT_LINK_FALLBACK = "https://t.me/VocabTrainBot"
 WELCOME_MESSAGE = (
-    "Hi! Send me a photo of your food or a receipt, ask about your tracked expenses and nutrition, "
-    "send me a French word to practice vocabulary, or tell me to save a recipe to your collection."
+    "Hi! Send me a photo of your food or a receipt, or just text what you ate or drank, ask about your tracked "
+    "expenses and nutrition, send me a French word to practice vocabulary, or tell me to save a recipe to your "
+    "collection."
 )

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from src.config import AppConfig
 from src.models import NutritionAnalysis, NutritionCorrectionResult
 from src.openai_schema import build_strict_openai_schema
-from src.utils import analyze_nutrition_image, correct_nutrition_analysis
+from src.utils import analyze_nutrition_image, analyze_nutrition_text, correct_nutrition_analysis
 
 
 def test_nutrition_schema_lists_ingredients_first():
@@ -124,6 +124,43 @@ def test_analyze_nutrition_image_extracts_item_count_and_scales_result(monkeypat
     assert 'Metadata: {"source": "telegram"}' in user_text
 
 
+def test_analyze_nutrition_text_normalizes_item_count_and_uses_user_message(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def _fake_call_text_with_schema(prompt, user_text, response_model, response_name):
+        captured["prompt"] = prompt
+        captured["user_text"] = user_text
+        captured["response_name"] = response_name
+        return NutritionAnalysis.model_validate(
+            {
+                "ingredients": [{"name": "croissant", "amount": "1 piece", "calories": 230.0}],
+                "category": "food",
+                "calories": 230.0,
+                "item_count": 2,
+                "macros": {"carbs": 26.0, "protein": 5.0, "fat": 12.0},
+                "tags": ["pastry"],
+                "alcohol_units": 0.0,
+            }
+        )
+
+    monkeypatch.setattr("src.utils._call_text_with_schema", _fake_call_text_with_schema)
+
+    result = analyze_nutrition_text("2 croissants", metadata={"recent_history": []})
+
+    assert result.category == "food"
+    assert result.item_count == 2
+    assert result.calories == 460.0
+    assert result.macros.carbs == 52.0
+    assert result.macros.protein == 10.0
+    assert result.macros.fat == 24.0
+
+    assert captured["response_name"] == "nutrition_text_analysis"
+    assert "text description of food or drink" in captured["prompt"]
+    assert "item_count to represent how many copies were consumed" in captured["prompt"]
+    assert "User message: 2 croissants" in captured["user_text"]
+    assert 'Metadata: {"recent_history": []}' in captured["user_text"]
+
+
 def test_correct_nutrition_analysis_preserves_previous_item_count_for_single_item_feedback(monkeypatch):
     monkeypatch.setattr(
         "src.utils._call_text_with_schema",
@@ -210,3 +247,39 @@ def test_correct_nutrition_analysis_respects_explicit_single_item_change(monkeyp
     assert result.analysis.macros.carbs == 60.0
     assert result.analysis.macros.protein == 20.0
     assert result.analysis.macros.fat == 18.0
+
+
+def test_correct_nutrition_analysis_prompt_requires_same_dish_for_corrections(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def _fake_call_text_with_schema(prompt, user_text, response_model, response_name):
+        captured["prompt"] = prompt
+        captured["user_text"] = user_text
+        captured["response_name"] = response_name
+        return NutritionCorrectionResult(apply_correction=False, analysis=None)
+
+    monkeypatch.setattr("src.utils._call_text_with_schema", _fake_call_text_with_schema)
+
+    previous = NutritionAnalysis.model_validate(
+        {
+            "ingredients": [{"name": "pizza", "amount": "1 pizza", "calories": 1000.0}],
+            "category": "food",
+            "calories": 1000.0,
+            "item_count": 1,
+            "macros": {"carbs": 120.0, "protein": 40.0, "fat": 36.0},
+            "tags": ["pizza"],
+            "alcohol_units": 0.0,
+        }
+    )
+
+    result = correct_nutrition_analysis("2 croissants", previous)
+
+    assert result.apply_correction is False
+    assert result.analysis is None
+    assert captured["response_name"] == "nutrition_correction"
+    assert "Only treat the message as a correction when it is clearly still about that same previously tracked dish or drink." in captured["prompt"]
+    assert "If the message introduces a different dish" in captured["prompt"]
+    assert "new nutrition entries instead" in captured["prompt"]
+    assert "Examples that are not corrections" in captured["prompt"]
+    assert "'2 croissants'" in captured["prompt"]
+    assert "User correction message: 2 croissants" in captured["user_text"]

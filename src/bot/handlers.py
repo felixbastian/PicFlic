@@ -202,6 +202,9 @@ async def _handle_text_workflow_result(
     result: dict,
 ) -> None:
     workflow_type = result["workflow_type"]
+    if workflow_type == "nutrition_tracking":
+        await _handle_nutrition_tracking_workflow(update, context, postgres_db, incoming_text, result)
+        return
     if workflow_type == "echo":
         await _handle_echo_workflow(update, context, incoming_text)
         return
@@ -221,6 +224,23 @@ async def _handle_echo_workflow(
 ) -> None:
     await update.message.reply_text(incoming_text)
     remember_text_turn(context, incoming_text, [incoming_text], workflow_type="echo")
+
+
+async def _handle_nutrition_tracking_workflow(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    postgres_db: Optional[PostgresDatabase],
+    incoming_text: str,
+    result: dict,
+) -> None:
+    persistence_note = None
+    if postgres_db is not None:
+        persistence_note = await persist_result(update, context, postgres_db, result)
+
+    response = format_result_response(result, persistence_note)
+    await update.message.reply_text(response, parse_mode=ParseMode.HTML)
+    remember_latest_nutrition_result(context, result)
+    remember_text_turn(context, incoming_text, [response], workflow_type="nutrition_tracking")
 
 
 async def _handle_vocabulary_workflow(
