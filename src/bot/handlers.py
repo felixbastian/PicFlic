@@ -43,8 +43,8 @@ from .state import (
 logger = logging.getLogger(__name__)
 
 ECHO_FALLBACK_MESSAGE = (
-    'Omg, I don\'t get it "big watery eyes smiley face". '
-    'Pleese give me more context about what you want "fingers pointing at each other emoji"'
+    'Omg, I don\'t get it 🥺. '
+    'Pleese give me more context about what you want 👉👈'
 )
 
 
