@@ -19,6 +19,7 @@ from src.bot import (
 from src.config import load_config
 from src.db import SqliteDatabase
 from src.models import EXPENSE_CATEGORIES
+from src.db import SqliteDatabase, validate_readonly_query
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -184,3 +185,18 @@ def test_process_text_uses_message_history_to_change_previous_expense_amount_end
     updated_record = agent.get_record(first_result["record_id"])
     assert updated_record is not None
     assert updated_record.analysis.expense_total_amount_in_euros == pytest.approx(10.0, abs=0.5)
+
+def test_expense_text_query_uses_expense_workflow_end_to_end(tmp_path):
+   
+    agent = PictoAgent(SqliteDatabase(tmp_path / "workflow.db"))
+
+    result = agent.process_text("What are the total expenses in January on groceries (Lebensmittel)?")
+
+    assert result["workflow_type"] == "expense_query"
+    assert result["explanation"].strip()
+    assert "fact_expenses" in result["sql_query"].lower()
+    assert result["response_template"].strip()
+    guarded_query = validate_readonly_query(result["sql_query"], ("fact_expenses",))
+    assert guarded_query.lower().startswith("select")
+    assert "$1" in guarded_query
+

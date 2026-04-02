@@ -91,6 +91,8 @@ def analyze_nutrition_image(image_path: str, metadata: Dict[str, Any] | None = N
         "First fill the ingredients field with the pictured food or drink broken into likely ingredients or components. "
         "Each ingredient name must be short and use at most 2 words. "
         "For each ingredient, estimate the amount using both the image and any user note in the metadata. "
+        "Verify portion size from surrounding visual context such as plate size, packaging, utensils, hands, tableware, and nearby objects. "
+        "Be careful not to assume bakery items are standard-sized when the image suggests a mini or bite-sized portion. "
         "Keep each amount short and compact, for example 6 pieces, 120 g, 250 ml, or ~25 g. "
         "Prefer counts when they are visually clear. Use ~ instead of words like about or approximately. "
         "For each ingredient, estimate that ingredient's calories for the stated amount. "
