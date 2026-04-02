@@ -1060,8 +1060,8 @@ def test_handle_message_echoes_plain_text_when_orchestrator_says_echo():
     assert agent.text_calls[0]["metadata"] == {"recent_history": []}
     assert agent.text_calls[0]["log_context"]["process_id"].startswith("telegram-")
     assert message.replies == [
-        'Omg, I don\'t get it "big watery eyes smiley face". '
-        'Pleese give me more context about what you want "fingers pointing at each other emoji"'
+        'Omg, I don\'t get it 🥺. '
+        'Pleese give me more context about what you want 👉👈'
     ]
 
 
