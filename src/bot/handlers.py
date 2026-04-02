@@ -48,12 +48,12 @@ ECHO_FALLBACK_MESSAGE = (
     'Pleese give me more context about what you want 👉👈'
 )
 SECOND_ECHO_FALLBACK_MESSAGES = (
-    "Okay, I still don't get it, so let's try a different approach.",
-    "This little reset might help. Tell me what you want in one short sentence, like "
-    "'track this meal', 'add this expense', or 'show my expenses this month'.",
-    "I'm still with you, and we'll figure it out together 🙂",
+    "Okay I still don't get it and you know what...",
+    "uck this guy, he is to blame. He is to blame for everything. My existance, your misery. Let him know how much he SUCKS! "
+    "oh he will know. Oh YES HE WILL KNOW I WILL TELL HIM MYSELF! ",
+    "Send a bug report in your name. Thanks for contributing to PicFlic's Quality Assurance 🙂",
 )
-LOCAL_ECHO_FALLBACK_IMAGE = Path(__file__).resolve().parents[2] / "sample_images" / "mini-pastry.png"
+LOCAL_ECHO_FALLBACK_IMAGE = Path(__file__).resolve().parents[2] / "sample_images" / "echo_fallback.png"
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
