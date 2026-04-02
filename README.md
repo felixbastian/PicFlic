@@ -138,6 +138,7 @@ scripts/start_local_test_stack.sh
 ```
 
 This starts the local API, the optional Cloud SQL proxy, a `cloudflared` tunnel, and the Telegram webhook in one go so you can test the real webhook path locally without pushing a Cloud Run deployment.
+Keep `.env.devbot` on the dev-only bot tokens so local webhook tests never overwrite the production bots.
 
 8. Call the API:
 
