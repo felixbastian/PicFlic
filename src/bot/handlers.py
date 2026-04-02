@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+from pathlib import Path
 from typing import Optional
 
 from telegram import Update
@@ -46,6 +47,13 @@ ECHO_FALLBACK_MESSAGE = (
     'Omg, I don\'t get it 🥺. '
     'Pleese give me more context about what you want 👉👈'
 )
+SECOND_ECHO_FALLBACK_MESSAGES = (
+    "Okay, I still don't get it, so let's try a different approach.",
+    "This little reset might help. Tell me what you want in one short sentence, like "
+    "'track this meal', 'add this expense', or 'show my expenses this month'.",
+    "I'm still with you, and we'll figure it out together 🙂",
+)
+LOCAL_ECHO_FALLBACK_IMAGE = Path(__file__).resolve().parents[2] / "sample_images" / "mini-pastry.png"
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -259,8 +267,39 @@ async def _handle_echo_workflow(
     context: ContextTypes.DEFAULT_TYPE,
     incoming_text: str,
 ) -> None:
+    if _should_use_second_echo_fallback(context):
+        await _send_second_echo_fallback(update)
+        remember_text_turn(context, incoming_text, list(SECOND_ECHO_FALLBACK_MESSAGES), workflow_type="echo")
+        return
+
     await update.message.reply_text(ECHO_FALLBACK_MESSAGE)
     remember_text_turn(context, incoming_text, [ECHO_FALLBACK_MESSAGE], workflow_type="echo")
+
+
+def _should_use_second_echo_fallback(context: ContextTypes.DEFAULT_TYPE) -> bool:
+    history = get_recent_history(context)
+    if not history:
+        return False
+
+    latest_item = history[-1]
+    return latest_item.get("role") == "assistant" and latest_item.get("workflow") == "echo"
+
+
+async def _send_second_echo_fallback(update: Update) -> None:
+    await update.message.reply_text(SECOND_ECHO_FALLBACK_MESSAGES[0])
+    await _reply_with_echo_fallback_photo(update)
+    await update.message.reply_text(SECOND_ECHO_FALLBACK_MESSAGES[1])
+    await update.message.reply_text(SECOND_ECHO_FALLBACK_MESSAGES[2])
+
+
+async def _reply_with_echo_fallback_photo(update: Update) -> None:
+    image_url = load_config().echo_fallback_image_url
+    if image_url:
+        await update.message.reply_photo(photo=image_url)
+        return
+
+    with LOCAL_ECHO_FALLBACK_IMAGE.open("rb") as photo_handle:
+        await update.message.reply_photo(photo=photo_handle)
 
 
 async def _handle_nutrition_tracking_workflow(

@@ -20,6 +20,7 @@ class AppConfig:
     telegram_token: str | None = None
     vocab_telegram_token: str | None = None
     vocab_bot_username: str = "VocabTrainBot"
+    echo_fallback_image_url: str | None = None
     db_user: str | None = None
     db_password: str | None = None
     db_name: str | None = None
@@ -56,6 +57,8 @@ def load_config(env_file: str | Path = DEFAULT_ENV_FILE) -> AppConfig:
         vocab_bot_username=os.getenv("VOCAB_TELEGRAM_BOT_USERNAME")
         or env_values.get("VOCAB_TELEGRAM_BOT_USERNAME")
         or "VocabTrainBot",
+        echo_fallback_image_url=os.getenv("PICTOAGENT_ECHO_FALLBACK_IMAGE_URL")
+        or env_values.get("PICTOAGENT_ECHO_FALLBACK_IMAGE_URL"),
         db_user=os.getenv("DB_USER") or env_values.get("DB_USER"),
         db_password=os.getenv("DB_PASSWORD") or env_values.get("DB_PASSWORD"),
         db_name=os.getenv("DB_NAME") or env_values.get("DB_NAME"),
