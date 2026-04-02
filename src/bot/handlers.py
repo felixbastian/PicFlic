@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import tempfile
@@ -49,7 +50,7 @@ ECHO_FALLBACK_MESSAGE = (
 )
 SECOND_ECHO_FALLBACK_MESSAGES = (
     "Okay I still don't get it and you know what...",
-    "uck this guy, he is to blame. He is to blame for everything. My existance, your misery. Let him know how much he SUCKS! "
+    "Fuck this guy, he is to blame. He is to blame for everything. My existance, your misery. Let him know how much he SUCKS! "
     "oh he will know. Oh YES HE WILL KNOW I WILL TELL HIM MYSELF! ",
     "Send a bug report in your name. Thanks for contributing to PicFlic's Quality Assurance 🙂",
 )
@@ -287,8 +288,11 @@ def _should_use_second_echo_fallback(context: ContextTypes.DEFAULT_TYPE) -> bool
 
 async def _send_second_echo_fallback(update: Update) -> None:
     await update.message.reply_text(SECOND_ECHO_FALLBACK_MESSAGES[0])
+    await asyncio.sleep(2)
     await _reply_with_echo_fallback_photo(update)
+    await asyncio.sleep(2)
     await update.message.reply_text(SECOND_ECHO_FALLBACK_MESSAGES[1])
+    await asyncio.sleep(2)
     await update.message.reply_text(SECOND_ECHO_FALLBACK_MESSAGES[2])
 
 
