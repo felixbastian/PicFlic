@@ -42,6 +42,11 @@ from .state import (
 
 logger = logging.getLogger(__name__)
 
+ECHO_FALLBACK_MESSAGE = (
+    'Omg, I don\'t get it "big watery eyes smiley face". '
+    'Pleese give me more context about what you want "fingers pointing at each other emoji"'
+)
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
@@ -254,8 +259,8 @@ async def _handle_echo_workflow(
     context: ContextTypes.DEFAULT_TYPE,
     incoming_text: str,
 ) -> None:
-    await update.message.reply_text(incoming_text)
-    remember_text_turn(context, incoming_text, [incoming_text], workflow_type="echo")
+    await update.message.reply_text(ECHO_FALLBACK_MESSAGE)
+    remember_text_turn(context, incoming_text, [ECHO_FALLBACK_MESSAGE], workflow_type="echo")
 
 
 async def _handle_nutrition_tracking_workflow(

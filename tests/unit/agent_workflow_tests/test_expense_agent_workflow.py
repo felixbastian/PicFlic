@@ -200,3 +200,26 @@ def test_expense_text_query_uses_expense_workflow_end_to_end(tmp_path):
     assert guarded_query.lower().startswith("select")
     assert "$1" in guarded_query
 
+
+def test_expense_text_query_builds_latest_item_query_end_to_end(tmp_path):
+    _require_openai_api_key()
+
+    agent = PictoAgent(SqliteDatabase(tmp_path / "workflow.db"))
+
+    result = _run_or_skip_for_openai_connectivity(
+        lambda: agent.process_text("What is the last expense item you added?")
+    )
+
+    assert result["workflow_type"] == "expense_query"
+    assert result["explanation"].strip()
+    assert result["response_template"].strip()
+
+    guarded_query = validate_readonly_query(result["sql_query"], ("fact_expenses",))
+    normalized_query = " ".join(guarded_query.lower().split())
+
+    assert normalized_query.startswith("select")
+    assert "from fact_expenses" in normalized_query
+    assert "$1" in guarded_query
+    assert "order by" in normalized_query
+    assert "created_at desc" in normalized_query
+    assert "limit 1" in normalized_query
