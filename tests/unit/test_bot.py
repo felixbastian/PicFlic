@@ -58,11 +58,17 @@ class _FakeMessage:
         self.text = None
         self.caption = None
         self.replies: list[str] = []
+        self.photos: list[object] = []
+        self.photo_kwargs: list[dict] = []
         self.reply_kwargs: list[dict] = []
 
     async def reply_text(self, text: str, **kwargs) -> None:
         self.replies.append(text)
         self.reply_kwargs.append(kwargs)
+
+    async def reply_photo(self, photo: object, **kwargs) -> None:
+        self.photos.append(photo)
+        self.photo_kwargs.append(kwargs)
 
 
 class _FakeAgent:
@@ -1063,6 +1069,54 @@ def test_handle_message_echoes_plain_text_when_orchestrator_says_echo():
         'Omg, I don\'t get it 🥺. '
         'Pleese give me more context about what you want 👉👈'
     ]
+    assert message.photos == []
+
+
+def test_handle_message_uses_friendly_sequence_on_second_consecutive_echo(monkeypatch):
+    message = _FakeMessage()
+    message.photo = []
+    message.text = "still confused"
+    agent = _FakeAgent(text_result={"workflow_type": "echo"})
+    update = SimpleNamespace(
+        update_id=1007,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    context = SimpleNamespace(
+        application=SimpleNamespace(bot_data={}),
+        user_data={
+            "_picflic_recent_messages": [
+                {"role": "user", "text": "hello there", "workflow": "echo"},
+                {
+                    "role": "assistant",
+                    "text": "Omg, I don't get it 🥺. Pleese give me more context about what you want 👉👈",
+                    "workflow": "echo",
+                },
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        "src.bot.handlers.load_config",
+        lambda: AppConfig(
+            openai_api_key="test-key",
+            echo_fallback_image_url="https://example.com/friendly-reset.png",
+        ),
+    )
+
+    asyncio.run(handle_message(update, context, agent))
+
+    assert message.replies == [
+        "Okay, I still don't get it, so let's try a different approach.",
+        "This little reset might help. Tell me what you want in one short sentence, like "
+        "'track this meal', 'add this expense', or 'show my expenses this month'.",
+        "I'm still with you, and we'll figure it out together 🙂",
+    ]
+    assert message.photos == ["https://example.com/friendly-reset.png"]
 
 
 def test_handle_message_stores_new_vocabulary_entry():
