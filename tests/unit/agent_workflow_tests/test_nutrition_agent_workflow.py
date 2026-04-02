@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from openai import APIConnectionError, APITimeoutError
 
 from src.agent import PictoAgent
 from src.bot import (
@@ -21,6 +22,7 @@ from src.db import SqliteDatabase
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 NUTRITION_IMAGE = PROJECT_ROOT / "sample_images" / "croissant.jpeg"
+MINI_PASTRY_IMAGE = PROJECT_ROOT / "sample_images" / "mini-pastry.png"
 
 
 def _require_openai_api_key() -> None:
@@ -32,6 +34,13 @@ def _require_openai_api_key() -> None:
 
 def _make_context() -> SimpleNamespace:
     return SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
+
+
+def _run_or_skip_for_openai_connectivity(fn):
+    try:
+        return fn()
+    except (APIConnectionError, APITimeoutError) as exc:
+        pytest.skip(f"OpenAI API is unreachable for nutrition workflow end-to-end validation: {exc}")
 
 
 def _remember_nutrition_turn(
@@ -69,7 +78,9 @@ def test_process_text_tracks_a_simple_nutrition_entry_end_to_end(tmp_path):
     _require_openai_api_key()
     agent = PictoAgent(SqliteDatabase(tmp_path / "workflow.db"))
 
-    result = agent.process_text("I ate a pain au chocolat.", metadata={"recent_history": []})
+    result = _run_or_skip_for_openai_connectivity(
+        lambda: agent.process_text("I ate a pain au chocolat.", metadata={"recent_history": []})
+    )
 
     assert result["workflow_type"] == "nutrition_tracking"
     assert result["task_type"] == "nutrition"
@@ -92,16 +103,20 @@ def test_process_text_uses_message_history_to_route_delete_and_remove_entry_end_
     context = _make_context()
 
     first_message = "I ate a pain au chocolat."
-    first_result = agent.process_text(first_message, metadata={"recent_history": []})
+    first_result = _run_or_skip_for_openai_connectivity(
+        lambda: agent.process_text(first_message, metadata={"recent_history": []})
+    )
     _remember_nutrition_turn(context, first_message, first_result)
 
     metadata = _build_followup_metadata(context)
     assert metadata["recent_history"] == get_recent_history(context)
     assert [item["role"] for item in metadata["recent_history"]] == ["user", "assistant"]
 
-    delete_result = agent.process_text(
-        "Please remove that, it was a mistake.",
-        metadata=metadata,
+    delete_result = _run_or_skip_for_openai_connectivity(
+        lambda: agent.process_text(
+            "Please remove that, it was a mistake.",
+            metadata=metadata,
+        )
     )
 
     assert delete_result["workflow_type"] == "delete_latest_entry"
@@ -119,12 +134,16 @@ def test_process_text_uses_message_history_to_scale_previous_entry_end_to_end(tm
     context = _make_context()
 
     first_message = "Ate a mini croissant"
-    first_result = agent.process_text(first_message, metadata={"recent_history": []})
+    first_result = _run_or_skip_for_openai_connectivity(
+        lambda: agent.process_text(first_message, metadata={"recent_history": []})
+    )
     _remember_nutrition_turn(context, first_message, first_result)
 
-    correction_result = agent.process_text(
-        "actually I ate 10",
-        metadata=_build_followup_metadata(context),
+    correction_result = _run_or_skip_for_openai_connectivity(
+        lambda: agent.process_text(
+            "actually I ate 10",
+            metadata=_build_followup_metadata(context),
+        )
     )
 
     original_calories = first_result["analysis"]["calories"]
@@ -162,16 +181,18 @@ def test_process_text_uses_message_history_to_add_ingredient_to_image_entry_end_
     agent = PictoAgent(SqliteDatabase(tmp_path / "workflow.db"))
     context = _make_context()
 
-    first_result = agent.process_image(str(NUTRITION_IMAGE))
+    first_result = _run_or_skip_for_openai_connectivity(lambda: agent.process_image(str(NUTRITION_IMAGE)))
     _remember_nutrition_turn(
         context,
         "Sent a photo of the pastry.",
         first_result,
     )
 
-    correction_result = agent.process_text(
-        "actually there was also blue cheese inside",
-        metadata=_build_followup_metadata(context),
+    correction_result = _run_or_skip_for_openai_connectivity(
+        lambda: agent.process_text(
+            "actually there was also blue cheese inside",
+            metadata=_build_followup_metadata(context),
+        )
     )
 
     corrected_ingredient_names = [
@@ -200,10 +221,12 @@ def test_process_image_caption_scales_item_count_end_to_end(tmp_path):
 
     agent = PictoAgent(SqliteDatabase(tmp_path / "workflow.db"))
 
-    baseline_result = agent.process_image(str(NUTRITION_IMAGE))
-    captioned_result = agent.process_image(
-        str(NUTRITION_IMAGE),
-        metadata={"caption": "2 of those"},
+    baseline_result = _run_or_skip_for_openai_connectivity(lambda: agent.process_image(str(NUTRITION_IMAGE)))
+    captioned_result = _run_or_skip_for_openai_connectivity(
+        lambda: agent.process_image(
+            str(NUTRITION_IMAGE),
+            metadata={"caption": "2 of those"},
+        )
     )
 
     assert baseline_result["task_type"] == "nutrition"
@@ -227,3 +250,22 @@ def test_process_image_caption_scales_item_count_end_to_end(tmp_path):
         rel=0.01,
         abs=1.0,
     )
+
+
+def test_process_image_recognizes_mini_pastry_as_small_portion_end_to_end(tmp_path):
+    assert MINI_PASTRY_IMAGE.is_file()
+    _require_openai_api_key()
+
+    agent = PictoAgent(SqliteDatabase(tmp_path / "workflow.db"))
+
+    result = _run_or_skip_for_openai_connectivity(lambda: agent.process_image(str(MINI_PASTRY_IMAGE)))
+
+    assert result["task_type"] == "nutrition"
+    assert result["record_id"]
+    assert result["analysis"]["ingredients"]
+    assert result["analysis"]["calories"] > 0
+    assert result["analysis"]["calories"] < 201
+
+    stored_record = agent.get_record(result["record_id"])
+    assert stored_record is not None
+    assert stored_record.analysis.calories < 201

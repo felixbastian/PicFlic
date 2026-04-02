@@ -14,31 +14,74 @@ from .constants import (
     RECENT_HISTORY_LIMIT,
 )
 
-
 def get_recent_history(context: ContextTypes.DEFAULT_TYPE) -> list[dict[str, str]]:
-    """Return the recent text conversation history stored for the current Telegram user."""
-    user_data = getattr(context, "user_data", None)
-    if not isinstance(user_data, dict):
+    """Return the user's recent text history in a normalized agent-facing format.
+
+    Input:
+    - reads ``context.user_data[RECENT_HISTORY_KEY]``, which may contain raw
+      persisted items of mixed quality.
+
+    Output:
+    - returns a list of dicts like ``{"role": "user", "text": "..."}``
+      and, when available, ``{"workflow": "nutrition_tracking"}``;
+    - includes at most the last ``RECENT_HISTORY_LIMIT`` valid items;
+    - returns ``[]`` when no usable history is stored.
+    """
+    user_data = _get_user_data_dict(context)
+    if user_data is None:
         return []
 
-    history = user_data.get(RECENT_HISTORY_KEY, [])
-    if not isinstance(history, list):
-        return []
+    history = _get_raw_recent_history(user_data)
 
     recent_items: list[dict[str, str]] = []
     for item in history[-RECENT_HISTORY_LIMIT:]:
-        if not isinstance(item, dict):
-            continue
-        role = str(item.get("role") or "").strip()
-        text = str(item.get("text") or "").strip()
-        if not role or not text:
-            continue
-        normalized_item = {"role": role, "text": text}
-        workflow = str(item.get("workflow") or "").strip()
-        if workflow:
-            normalized_item["workflow"] = workflow
-        recent_items.append(normalized_item)
+        normalized_item = _normalize_recent_history_item(item)
+        if normalized_item is not None:
+            recent_items.append(normalized_item)
     return recent_items
+
+
+
+def _get_user_data_dict(context: ContextTypes.DEFAULT_TYPE) -> dict[str, Any] | None:
+    """Return ``context.user_data`` only when it is a dict-like Telegram state store."""
+    user_data = getattr(context, "user_data", None)
+    if not isinstance(user_data, dict):
+        return None
+    return user_data
+
+
+def _get_raw_recent_history(user_data: Mapping[str, Any]) -> list[Any]:
+    """Return the stored recent-history payload when it is a list, otherwise ``[]``."""
+    history = user_data.get(RECENT_HISTORY_KEY, [])
+    if not isinstance(history, list):
+        return []
+    return history
+
+
+def _normalize_recent_history_item(item: Any) -> dict[str, str] | None:
+    """Validate and clean one stored history item before it reaches the agent.
+
+    ``context.user_data`` is loosely typed, so this helper acts as the boundary
+    between raw persisted state and the compact, predictable shape expected by
+    ``get_recent_history()``. Invalid or empty items are rejected by returning
+    ``None``; valid items are normalized into ``{"role": ..., "text": ...}``
+    plus ``workflow`` when present.
+    """
+    if not isinstance(item, dict):
+        return None
+
+    role = str(item.get("role") or "").strip()
+    text = str(item.get("text") or "").strip()
+    if not role or not text:
+        return None
+
+    normalized_item = {"role": role, "text": text}
+    workflow = str(item.get("workflow") or "").strip()
+    if workflow:
+        normalized_item["workflow"] = workflow
+    return normalized_item
+
+
 
 
 def remember_text_turn(
@@ -47,9 +90,31 @@ def remember_text_turn(
     assistant_messages: list[str],
     workflow_type: str,
 ) -> None:
-    """Store the latest text turn so the orchestrator can use short-term chat history."""
-    user_data = getattr(context, "user_data", None)
-    if not isinstance(user_data, dict):
+    """Append one text interaction to the compact recent-history window.
+
+    This stores the current user message and the assistant replies as plain text
+    items under ``RECENT_HISTORY_KEY``. The goal is to help later text messages
+    feel contextual, for example when the user asks a follow-up question like
+    "can you explain that" or "delete the last one".
+
+    A few design choices matter here:
+    - the function first calls :func:`get_recent_history`, so it always rebuilds
+      history from a cleaned, normalized version of whatever is currently stored;
+    - the user message is stored first, then each assistant reply in order, which
+      preserves the conversational turn structure;
+    - every stored item includes ``workflow`` so later routing can distinguish
+      whether a message came from nutrition tracking, vocabulary, deletions, and
+      so on;
+    - blank strings are ignored to avoid wasting the tiny history budget;
+    - after appending, history is trimmed to ``RECENT_HISTORY_LIMIT`` so we keep
+      only a short sliding window instead of an ever-growing transcript.
+
+    Because the limit is applied to individual messages, not user/assistant turn
+    pairs, older entries may drop off one by one. That is intentional: this state
+    is optimized for lightweight routing context, not archival chat storage.
+    """
+    user_data = _get_user_data_dict(context)
+    if user_data is None:
         return
 
     history = get_recent_history(context)
@@ -64,9 +129,24 @@ def remember_text_turn(
 
 
 def remember_latest_nutrition_result(context: ContextTypes.DEFAULT_TYPE, result: Mapping[str, Any]) -> None:
-    """Store the latest nutrition result so a follow-up text can correct it."""
-    user_data = getattr(context, "user_data", None)
-    if not isinstance(user_data, dict):
+    """Store the latest nutrition analysis for correction-style follow-ups.
+
+    This is separate from recent text history. Instead of storing prose, it keeps
+    the structured payload the agent needs when the next user message says
+    something like "it was actually 330 ml" or "change that to two eggs".
+
+    Only three fields are persisted:
+    - ``record_id`` for the agent's internal record update path;
+    - ``meal_id`` for database persistence updates;
+    - ``analysis`` for the previously extracted nutrition details that a
+      correction prompt should modify.
+
+    The function requires ``analysis`` to be a dict before storing anything. That
+    guard prevents follow-up correction flows from receiving incomplete state that
+    looks present but cannot actually be edited.
+    """
+    user_data = _get_user_data_dict(context)
+    if user_data is None:
         return
 
     analysis = result.get("analysis")
@@ -83,8 +163,8 @@ def remember_latest_nutrition_result(context: ContextTypes.DEFAULT_TYPE, result:
 
 def remember_latest_expense_result(context: ContextTypes.DEFAULT_TYPE, result: Mapping[str, Any]) -> None:
     """Store the latest expense result so a follow-up text can correct it."""
-    user_data = getattr(context, "user_data", None)
-    if not isinstance(user_data, dict):
+    user_data = _get_user_data_dict(context)
+    if user_data is None:
         return
 
     analysis = result.get("analysis")
@@ -100,9 +180,26 @@ def remember_latest_expense_result(context: ContextTypes.DEFAULT_TYPE, result: M
 
 
 def remember_latest_tracking_result(context: ContextTypes.DEFAULT_TYPE, result: Mapping[str, Any]) -> None:
-    """Store the latest tracked entry so follow-up delete requests can target exactly one record."""
-    user_data = getattr(context, "user_data", None)
-    if not isinstance(user_data, dict):
+    """Store the last tracked entity in a workflow-agnostic shape.
+
+    This is the broad "what was the last thing we created or updated?" memory.
+    It exists mainly for delete and generic follow-up flows where the bot needs a
+    single concrete target but does not yet know whether the user is referring to
+    nutrition, an expense, or a recipe.
+
+    The stored payload always includes ``task_type`` plus the possible identifier
+    slots (``record_id``, ``meal_id``, ``expense_id``, ``dish_id``). Unused ids
+    are stored as empty strings so downstream code can read one consistent shape
+    without checking for missing keys. If ``analysis`` exists and is a dict, it is
+    carried along as well, which gives the agent extra context for disambiguation
+    or correction-like reasoning.
+
+    If ``task_type`` is missing, nothing is stored. Without that field, later code
+    would not know which delete/update path to take, so saving partial state would
+    be more confusing than helpful.
+    """
+    user_data = _get_user_data_dict(context)
+    if user_data is None:
         return
 
     task_type = str(result.get("task_type") or "").strip()
@@ -124,8 +221,8 @@ def remember_latest_tracking_result(context: ContextTypes.DEFAULT_TYPE, result: 
 
 def get_latest_nutrition_result(context: ContextTypes.DEFAULT_TYPE) -> dict[str, Any] | None:
     """Return the last nutrition result stored for follow-up corrections."""
-    user_data = getattr(context, "user_data", None)
-    if not isinstance(user_data, dict):
+    user_data = _get_user_data_dict(context)
+    if user_data is None:
         return None
 
     payload = user_data.get(LAST_NUTRITION_RESULT_KEY)
@@ -138,8 +235,8 @@ def get_latest_nutrition_result(context: ContextTypes.DEFAULT_TYPE) -> dict[str,
 
 def get_latest_expense_result(context: ContextTypes.DEFAULT_TYPE) -> dict[str, Any] | None:
     """Return the last expense result stored for follow-up corrections."""
-    user_data = getattr(context, "user_data", None)
-    if not isinstance(user_data, dict):
+    user_data = _get_user_data_dict(context)
+    if user_data is None:
         return None
 
     payload = user_data.get(LAST_EXPENSE_RESULT_KEY)
@@ -152,8 +249,8 @@ def get_latest_expense_result(context: ContextTypes.DEFAULT_TYPE) -> dict[str, A
 
 def get_latest_tracking_result(context: ContextTypes.DEFAULT_TYPE) -> dict[str, Any] | None:
     """Return the last tracked entry stored for follow-up delete requests."""
-    user_data = getattr(context, "user_data", None)
-    if not isinstance(user_data, dict):
+    user_data = _get_user_data_dict(context)
+    if user_data is None:
         return None
 
     payload = user_data.get(LAST_TRACKING_RESULT_KEY)
@@ -167,23 +264,33 @@ def get_latest_tracking_result(context: ContextTypes.DEFAULT_TYPE) -> dict[str, 
 
 def clear_latest_nutrition_result(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Remove any pending nutrition correction context."""
-    user_data = getattr(context, "user_data", None)
-    if not isinstance(user_data, dict):
+    user_data = _get_user_data_dict(context)
+    if user_data is None:
         return
     user_data.pop(LAST_NUTRITION_RESULT_KEY, None)
 
 
 def clear_latest_expense_result(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Remove any pending expense correction context."""
-    user_data = getattr(context, "user_data", None)
-    if not isinstance(user_data, dict):
+    """Remove stored expense-specific follow-up context.
+
+    The bot keeps separate "latest nutrition" and "latest expense" memories so it
+    can interpret corrections precisely. When a new result belongs to another
+    domain, or when an expense entry has been deleted, this helper clears the
+    expense-specific slot to avoid applying a later correction to stale data.
+
+    This function only clears the expense correction payload. It does not touch
+    recent chat history or the broader ``latest_tracking_result`` entry, because
+    those pieces of state serve different follow-up behaviors.
+    """
+    user_data = _get_user_data_dict(context)
+    if user_data is None:
         return
     user_data.pop(LAST_EXPENSE_RESULT_KEY, None)
 
 
 def clear_latest_tracking_result(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Remove any pending latest tracked-entry context."""
-    user_data = getattr(context, "user_data", None)
-    if not isinstance(user_data, dict):
+    user_data = _get_user_data_dict(context)
+    if user_data is None:
         return
     user_data.pop(LAST_TRACKING_RESULT_KEY, None)

@@ -30,7 +30,9 @@ Use the dedicated Telegram test bot locally so you can exercise the webhook flow
    ```
 
    - set `OPENAI_API_KEY`
-   - keep the dev bot token in `TELEGRAM_BOT_TOKEN`
+   - keep the `PicFlicBot-Dev` token in `TELEGRAM_BOT_TOKEN`
+   - keep the `DevVocabTrainBot` token in `VOCAB_TELEGRAM_BOT_TOKEN`
+   - keep `VOCAB_TELEGRAM_BOT_USERNAME=DevVocabTrainBot`
    - if you want local `fact_consumption` writes, also set:
      - `DB_USER`
      - `DB_PASSWORD`
@@ -51,7 +53,7 @@ That script:
 - starts `cloudflared`
 - waits until the public `/health` endpoint is reachable
 - reads the public URL
-- sets the Telegram webhook automatically
+- sets the main and vocabulary Telegram webhooks automatically
 - writes logs to `./logs/local-test-stack/<timestamp>/`
 - also updates stable symlinks at:
   - `./logs/local-test-stack/app.log`
@@ -98,6 +100,7 @@ If you want to run the pieces separately instead, use the steps below.
    - a photo
    - a photo with a caption
    - a plain text message
+   - a vocabulary review reply in `DevVocabTrainBot`
 
 5. When you are done, remove the webhook:
 
@@ -110,8 +113,10 @@ If you want to run the pieces separately instead, use the steps below.
 This local setup uses the same webhook endpoint as production:
 
 - `POST /webhook/telegram`
+- `POST /webhook/telegram/vocabulary`
 - Telegram update parsing
 - photo download and analysis
 - caption-to-LLM metadata forwarding
 - optional PostgreSQL writes to `fact_consumption`
+- vocabulary review reply handling
 - daily calorie total reply

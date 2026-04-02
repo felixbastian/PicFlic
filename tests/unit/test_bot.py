@@ -1059,7 +1059,10 @@ def test_handle_message_echoes_plain_text_when_orchestrator_says_echo():
     assert agent.text_calls[0]["text"] == "hello there"
     assert agent.text_calls[0]["metadata"] == {"recent_history": []}
     assert agent.text_calls[0]["log_context"]["process_id"].startswith("telegram-")
-    assert message.replies == ["hello there"]
+    assert message.replies == [
+        'Omg, I don\'t get it "big watery eyes smiley face". '
+        'Pleese give me more context about what you want "fingers pointing at each other emoji"'
+    ]
 
 
 def test_handle_message_stores_new_vocabulary_entry():
@@ -1293,7 +1296,10 @@ def test_handle_message_does_not_treat_pending_review_as_main_bot_flow():
 
     assert len(agent.text_calls) == 1
     assert postgres_db.record_review_calls == []
-    assert message.replies == ["Bonjor"]
+    assert message.replies == [
+        'Omg, I don\'t get it "big watery eyes smiley face". '
+        'Pleese give me more context about what you want "fingers pointing at each other emoji"'
+    ]
 
 
 def test_handle_message_reports_query_unavailable_without_postgres():
