@@ -1297,8 +1297,8 @@ def test_handle_message_does_not_treat_pending_review_as_main_bot_flow():
     assert len(agent.text_calls) == 1
     assert postgres_db.record_review_calls == []
     assert message.replies == [
-        'Omg, I don\'t get it "big watery eyes smiley face". '
-        'Pleese give me more context about what you want "fingers pointing at each other emoji"'
+        'Omg, I don\'t get it 🥺. '
+        'Pleese give me more context about what you want 👉👈'
     ]
 
 
