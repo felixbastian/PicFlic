@@ -663,12 +663,16 @@ class PostgresDatabase:
                     v.french_word,
                     v.english_description,
                     v.current_review_stage,
-                    v.next_review_at
+                    v.next_review_at,
+                    COALESCE(v.used_in_sentence, FALSE) AS used_in_sentence,
+                    COALESCE(v.awaiting_sentence, FALSE) AS awaiting_sentence,
+                    COALESCE(v.sentence_attempts, 0) AS sentence_attempts
                 FROM fact_vocabulary v
                 JOIN dim_user u ON u.user_id = v.user_id
                 WHERE v.finished = FALSE
                   AND v.shelf = FALSE
                   AND v.awaiting_review = FALSE
+                  AND COALESCE(v.awaiting_sentence, FALSE) = FALSE
                   AND v.current_review_stage IS NOT NULL
                   AND v.next_review_at IS NOT NULL
                   AND v.next_review_at <= CURRENT_TIMESTAMP
@@ -678,9 +682,11 @@ class PostgresDatabase:
                       SELECT 1
                       FROM fact_vocabulary pending
                       WHERE pending.user_id = v.user_id
-                        AND pending.awaiting_review = TRUE
-                        AND pending.finished = FALSE
                         AND pending.shelf = FALSE
+                        AND (
+                            pending.awaiting_review = TRUE
+                            OR COALESCE(pending.awaiting_sentence, FALSE) = TRUE
+                        )
                   )
                 ORDER BY v.user_id, v.next_review_at ASC, v.created_at ASC
                 LIMIT $1
@@ -716,19 +722,28 @@ class PostgresDatabase:
                     v.french_word,
                     v.english_description,
                     v.current_review_stage,
-                    v.next_review_at
+                    v.next_review_at,
+                    COALESCE(v.used_in_sentence, FALSE) AS used_in_sentence,
+                    COALESCE(v.awaiting_sentence, FALSE) AS awaiting_sentence,
+                    COALESCE(v.sentence_attempts, 0) AS sentence_attempts
                 FROM fact_vocabulary v
                 JOIN dim_user u ON u.user_id = v.user_id
-                WHERE v.finished = FALSE
-                  AND v.shelf = FALSE
-                  AND v.awaiting_review = TRUE
+                WHERE v.shelf = FALSE
+                  AND (
+                      v.awaiting_review = TRUE
+                      OR COALESCE(v.awaiting_sentence, FALSE) = TRUE
+                  )
                   AND (
                       v.last_review_prompted_at IS NULL
                       OR v.last_review_prompted_at <= CURRENT_TIMESTAMP - $1::INTERVAL
                   )
                   AND u.telegram_user_id IS NOT NULL
                   AND COALESCE(u.has_vocab_bot_activated, FALSE) = TRUE
-                ORDER BY v.user_id, v.last_review_prompted_at ASC NULLS FIRST, v.created_at ASC
+                ORDER BY
+                    v.user_id,
+                    COALESCE(v.awaiting_sentence, FALSE) DESC,
+                    v.last_review_prompted_at ASC NULLS FIRST,
+                    v.created_at ASC
                 LIMIT $2
                 """,
                 resend_after,
@@ -759,13 +774,17 @@ class PostgresDatabase:
                     v.french_word,
                     v.english_description,
                     v.current_review_stage,
-                    v.next_review_at
+                    v.next_review_at,
+                    COALESCE(v.used_in_sentence, FALSE) AS used_in_sentence,
+                    COALESCE(v.awaiting_sentence, FALSE) AS awaiting_sentence,
+                    COALESCE(v.sentence_attempts, 0) AS sentence_attempts
                 FROM fact_vocabulary v
                 JOIN dim_user u ON u.user_id = v.user_id
                 WHERE v.user_id = $1
                   AND v.finished = FALSE
                   AND v.shelf = FALSE
                   AND v.awaiting_review = FALSE
+                  AND COALESCE(v.awaiting_sentence, FALSE) = FALSE
                   AND v.current_review_stage IS NOT NULL
                   AND v.next_review_at IS NOT NULL
                   AND v.next_review_at <= CURRENT_TIMESTAMP
@@ -775,9 +794,11 @@ class PostgresDatabase:
                       SELECT 1
                       FROM fact_vocabulary pending
                       WHERE pending.user_id = v.user_id
-                        AND pending.awaiting_review = TRUE
-                        AND pending.finished = FALSE
                         AND pending.shelf = FALSE
+                        AND (
+                            pending.awaiting_review = TRUE
+                            OR COALESCE(pending.awaiting_sentence, FALSE) = TRUE
+                        )
                   )
                 ORDER BY v.next_review_at ASC, v.created_at ASC
                 LIMIT 1
@@ -823,15 +844,23 @@ class PostgresDatabase:
                     v.french_word,
                     v.english_description,
                     v.current_review_stage,
-                    v.next_review_at
+                    v.next_review_at,
+                    COALESCE(v.used_in_sentence, FALSE) AS used_in_sentence,
+                    COALESCE(v.awaiting_sentence, FALSE) AS awaiting_sentence,
+                    COALESCE(v.sentence_attempts, 0) AS sentence_attempts
                 FROM fact_vocabulary v
                 JOIN dim_user u ON u.user_id = v.user_id
                 WHERE u.telegram_user_id = $1
-                  AND v.awaiting_review = TRUE
-                  AND v.finished = FALSE
+                  AND (
+                      v.awaiting_review = TRUE
+                      OR COALESCE(v.awaiting_sentence, FALSE) = TRUE
+                  )
                   AND v.shelf = FALSE
                   AND COALESCE(u.has_vocab_bot_activated, FALSE) = TRUE
-                ORDER BY v.last_review_prompted_at DESC NULLS LAST, v.created_at ASC
+                ORDER BY
+                    COALESCE(v.awaiting_sentence, FALSE) DESC,
+                    v.last_review_prompted_at DESC NULLS LAST,
+                    v.created_at ASC
                 LIMIT 1
                 """,
                 telegram_user_id,
@@ -934,6 +963,7 @@ class PostgresDatabase:
         *,
         correct: bool = False,
         shelved: bool = False,
+        request_sentence_practice: bool = False,
     ) -> VocabularyReviewResult:
         """Persist the result of a user's vocabulary review answer."""
         if not self._pool:
@@ -960,6 +990,8 @@ class PostgresDatabase:
                         UPDATE fact_vocabulary
                         SET shelf = TRUE,
                             awaiting_review = FALSE,
+                            awaiting_sentence = FALSE,
+                            sentence_attempts = 0,
                             current_review_stage = NULL,
                             next_review_at = NULL
                         WHERE vocabulary_id = $1
@@ -975,6 +1007,7 @@ class PostgresDatabase:
                         finished=False,
                         current_review_stage=None,
                         next_review_at=None,
+                        awaiting_sentence=False,
                     )
 
                 if current_stage not in _REVIEW_STAGE_INTERVAL_SQL:
@@ -984,19 +1017,39 @@ class PostgresDatabase:
                 if correct:
                     flag_column = _REVIEW_STAGE_FLAG_COLUMN[stage]
                     next_stage = _REVIEW_STAGE_NEXT[stage]
+                    awaiting_sentence = request_sentence_practice
                     if next_stage is None:
-                        await conn.execute(
-                            f"""
-                            UPDATE fact_vocabulary
-                            SET {flag_column} = TRUE,
-                                finished = TRUE,
-                                awaiting_review = FALSE,
-                                current_review_stage = NULL,
-                                next_review_at = NULL
-                            WHERE vocabulary_id = $1
-                            """,
-                            vocabulary_id,
-                        )
+                        if awaiting_sentence:
+                            await conn.execute(
+                                f"""
+                                UPDATE fact_vocabulary
+                                SET {flag_column} = TRUE,
+                                    finished = TRUE,
+                                    awaiting_review = TRUE,
+                                    awaiting_sentence = TRUE,
+                                    sentence_attempts = 0,
+                                    last_review_prompted_at = CURRENT_TIMESTAMP,
+                                    current_review_stage = NULL,
+                                    next_review_at = NULL
+                                WHERE vocabulary_id = $1
+                                """,
+                                vocabulary_id,
+                            )
+                        else:
+                            await conn.execute(
+                                f"""
+                                UPDATE fact_vocabulary
+                                SET {flag_column} = TRUE,
+                                    finished = TRUE,
+                                    awaiting_review = FALSE,
+                                    awaiting_sentence = FALSE,
+                                    sentence_attempts = 0,
+                                    current_review_stage = NULL,
+                                    next_review_at = NULL
+                                WHERE vocabulary_id = $1
+                                """,
+                                vocabulary_id,
+                            )
                         return VocabularyReviewResult(
                             vocabulary_id=vocabulary_id,
                             user_id=str(row["user_id"]),
@@ -1006,19 +1059,38 @@ class PostgresDatabase:
                             finished=True,
                             current_review_stage=None,
                             next_review_at=None,
+                            awaiting_sentence=awaiting_sentence,
                         )
 
-                    await conn.execute(
-                        f"""
-                        UPDATE fact_vocabulary
-                        SET {flag_column} = TRUE,
-                            awaiting_review = FALSE,
-                            current_review_stage = '{next_stage}',
-                            next_review_at = CURRENT_TIMESTAMP + {_REVIEW_STAGE_INTERVAL_SQL[next_stage]}
-                        WHERE vocabulary_id = $1
-                        """,
-                        vocabulary_id,
-                    )
+                    if awaiting_sentence:
+                        await conn.execute(
+                            f"""
+                            UPDATE fact_vocabulary
+                            SET {flag_column} = TRUE,
+                                awaiting_review = TRUE,
+                                awaiting_sentence = TRUE,
+                                sentence_attempts = 0,
+                                last_review_prompted_at = CURRENT_TIMESTAMP,
+                                current_review_stage = '{next_stage}',
+                                next_review_at = CURRENT_TIMESTAMP + {_REVIEW_STAGE_INTERVAL_SQL[next_stage]}
+                            WHERE vocabulary_id = $1
+                            """,
+                            vocabulary_id,
+                        )
+                    else:
+                        await conn.execute(
+                            f"""
+                            UPDATE fact_vocabulary
+                            SET {flag_column} = TRUE,
+                                awaiting_review = FALSE,
+                                awaiting_sentence = FALSE,
+                                sentence_attempts = 0,
+                                current_review_stage = '{next_stage}',
+                                next_review_at = CURRENT_TIMESTAMP + {_REVIEW_STAGE_INTERVAL_SQL[next_stage]}
+                            WHERE vocabulary_id = $1
+                            """,
+                            vocabulary_id,
+                        )
                     updated = await conn.fetchrow(
                         """
                         SELECT next_review_at, current_review_stage
@@ -1036,12 +1108,15 @@ class PostgresDatabase:
                         finished=False,
                         current_review_stage=updated["current_review_stage"],
                         next_review_at=updated["next_review_at"],
+                        awaiting_sentence=awaiting_sentence,
                     )
 
                 await conn.execute(
                     f"""
                     UPDATE fact_vocabulary
                     SET awaiting_review = FALSE,
+                        awaiting_sentence = FALSE,
+                        sentence_attempts = 0,
                         next_review_at = CURRENT_TIMESTAMP + {_REVIEW_STAGE_INTERVAL_SQL[stage]}
                     WHERE vocabulary_id = $1
                     """,
@@ -1064,7 +1139,63 @@ class PostgresDatabase:
                     finished=False,
                     current_review_stage=updated["current_review_stage"],
                     next_review_at=updated["next_review_at"],
+                    awaiting_sentence=False,
                 )
+
+    async def mark_vocabulary_used_in_sentence(self, vocabulary_id: str) -> None:
+        """Mark a vocabulary card as successfully used in a sentence."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE fact_vocabulary
+                SET used_in_sentence = TRUE,
+                    awaiting_review = FALSE,
+                    awaiting_sentence = FALSE,
+                    sentence_attempts = 0
+                WHERE vocabulary_id = $1
+                """,
+                vocabulary_id,
+            )
+
+    async def increment_vocabulary_sentence_attempts(self, vocabulary_id: str) -> int:
+        """Increment the stored sentence-practice attempt counter and return the new value."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            updated_attempts = await conn.fetchval(
+                """
+                UPDATE fact_vocabulary
+                SET awaiting_review = TRUE,
+                    awaiting_sentence = TRUE,
+                    sentence_attempts = COALESCE(sentence_attempts, 0) + 1,
+                    last_review_prompted_at = CURRENT_TIMESTAMP
+                WHERE vocabulary_id = $1
+                RETURNING sentence_attempts
+                """,
+                vocabulary_id,
+            )
+            return int(updated_attempts or 0)
+
+    async def clear_vocabulary_sentence_prompt(self, vocabulary_id: str) -> None:
+        """Clear any pending sentence-practice prompt without marking it completed."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE fact_vocabulary
+                SET awaiting_review = FALSE,
+                    awaiting_sentence = FALSE,
+                    sentence_attempts = 0
+                WHERE vocabulary_id = $1
+                """,
+                vocabulary_id,
+            )
 
     async def execute_guarded_query(
         self,

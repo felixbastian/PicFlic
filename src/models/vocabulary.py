@@ -42,8 +42,11 @@ class DueVocabularyReview(BaseModel):
     telegram_user_id: int
     french_word: str
     english_description: str
-    current_review_stage: VocabularyReviewStage
-    next_review_at: datetime
+    current_review_stage: VocabularyReviewStage | None = None
+    next_review_at: datetime | None = None
+    used_in_sentence: bool = False
+    awaiting_sentence: bool = False
+    sentence_attempts: int = 0
 
 
 class VocabularyReviewResult(BaseModel):
@@ -59,6 +62,7 @@ class VocabularyReviewResult(BaseModel):
     finished: bool
     current_review_stage: VocabularyReviewStage | None
     next_review_at: datetime | None
+    awaiting_sentence: bool = False
 
 
 class ReferencedVocabularyReview(BaseModel):
@@ -80,3 +84,13 @@ class VocabularySynonymHint(BaseModel):
 
     give_second_chance: bool
     distinction: str | None = None
+
+
+class VocabularySentenceEvaluation(BaseModel):
+    """Evaluation of a user's sentence using a vocabulary word."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    acceptable: bool
+    corrected_sentence: str | None = None
+    feedback: str

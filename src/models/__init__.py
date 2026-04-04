@@ -8,6 +8,7 @@ from .routing import RoutingDecision
 from .vocabulary import (
     DueVocabularyReview,
     ReferencedVocabularyReview,
+    VocabularySentenceEvaluation,
     VocabularyReviewResult,
     VocabularyReviewStage,
     VocabularySynonymHint,
@@ -36,6 +37,7 @@ __all__ = [
     "TrackingTaskType",
     "DueVocabularyReview",
     "ReferencedVocabularyReview",
+    "VocabularySentenceEvaluation",
     "VocabularyReviewResult",
     "VocabularyReviewStage",
     "VocabularySynonymHint",

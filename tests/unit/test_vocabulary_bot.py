@@ -139,6 +139,7 @@ class _FakeVocabularyAgent:
                 current_review_stage="three_days",
                 next_review_at=None,
             ),
+            "dispatch_next_due_review": True,
         }
 
     async def process_review_answer(self, telegram_user_id: int, answer_text: str, db) -> dict:
@@ -259,6 +260,7 @@ def test_handle_message_replies_when_no_review_is_pending():
         result={
             "response": "No vocabulary review is waiting right now. Use the main bot to save new words first.",
             "review_result": None,
+            "dispatch_next_due_review": False,
         }
     )
 
@@ -269,6 +271,51 @@ def test_handle_message_replies_when_no_review_is_pending():
     ]
     assert application.bot.sent_messages == []
     assert postgres_db.mark_prompted_calls == []
+
+
+def test_handle_message_does_not_dispatch_next_due_review_while_sentence_practice_is_pending():
+    message = _FakeMessage(text="bonjour")
+    update = SimpleNamespace(
+        update_id=4006,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    application = _FakeApplication()
+    context = SimpleNamespace(application=application)
+    postgres_db = _FakePostgresDatabase()
+    agent = _FakeVocabularyAgent(
+        result={
+            "response": (
+                'Correct. The French word is "bonjour". I will ask you again in 3 days.\n\n'
+                'Write one short French sentence using "bonjour". Reply \'p\' or \'pass\' to skip this part.'
+            ),
+            "review_result": VocabularyReviewResult(
+                vocabulary_id="vocab-1",
+                user_id="user-123",
+                french_word="bonjour",
+                correct=True,
+                shelved=False,
+                finished=False,
+                current_review_stage="three_days",
+                next_review_at=None,
+                awaiting_sentence=True,
+            ),
+            "dispatch_next_due_review": False,
+        }
+    )
+
+    asyncio.run(handle_message(update, context, agent, postgres_db))
+
+    assert message.replies == [
+        'Correct. The French word is "bonjour". I will ask you again in 3 days.\n\n'
+        'Write one short French sentence using "bonjour". Reply \'p\' or \'pass\' to skip this part.'
+    ]
+    assert application.bot.sent_messages == []
 
 
 def test_dispatch_due_vocabulary_reviews_sends_one_prompt_per_due_review():
@@ -353,6 +400,35 @@ def test_dispatch_due_vocabulary_reviews_resends_stale_pending_before_new_due_re
         },
     ]
     assert postgres_db.mark_prompted_calls == ["vocab-stale", "vocab-due"]
+
+
+def test_dispatch_due_vocabulary_reviews_resends_pending_sentence_prompt():
+    application = _FakeApplication()
+    postgres_db = _FakePostgresDatabase()
+    postgres_db.stale_reviews = [
+        DueVocabularyReview(
+            vocabulary_id="vocab-sentence",
+            user_id="user-123",
+            telegram_user_id=42,
+            french_word="bonjour",
+            english_description="hello",
+            current_review_stage=None,
+            next_review_at=None,
+            awaiting_sentence=True,
+            sentence_attempts=1,
+        )
+    ]
+
+    sent_count = asyncio.run(dispatch_due_vocabulary_reviews(application, postgres_db))
+
+    assert sent_count == 1
+    assert application.bot.sent_messages == [
+        {
+            "chat_id": 42,
+            "text": 'Try one more short French sentence using "bonjour". Reply \'p\' or \'pass\' to skip this part.',
+        }
+    ]
+    assert postgres_db.mark_prompted_calls == ["vocab-sentence"]
 
 
 def test_handle_message_shelves_quoted_review_prompt_after_answer():
