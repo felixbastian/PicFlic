@@ -17,6 +17,7 @@ def test_load_config_reads_dotenv(tmp_path, monkeypatch):
     env_file.write_text(
         "OPENAI_API_KEY=test-key\n"
         "PICTOAGENT_OPENAI_MODEL=test-model\n"
+        "PICTOAGENT_TIME_ZONE=Europe/Paris\n"
         "PICTOAGENT_DATABASE_PATH=./data/test.db\n"
         "VOCAB_TELEGRAM_BOT_TOKEN=vocab-token\n"
         "VOCAB_TELEGRAM_BOT_USERNAME=VocabTrainBot\n"
@@ -31,6 +32,7 @@ def test_load_config_reads_dotenv(tmp_path, monkeypatch):
 
     assert config.openai_api_key == "test-key"
     assert config.openai_model == "test-model"
+    assert config.app_time_zone == "Europe/Paris"
     assert config.database_path.name == "test.db"
     assert config.database_path.parent.name == "data"
     assert config.vocab_telegram_token == "vocab-token"
@@ -47,6 +49,7 @@ def test_load_config_reads_dotenv(tmp_path, monkeypatch):
 def test_load_config_prefers_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "env-key")
     monkeypatch.setenv("PICTOAGENT_OPENAI_MODEL", "env-model")
+    monkeypatch.setenv("PICTOAGENT_TIME_ZONE", "UTC")
     monkeypatch.setenv("PICTOAGENT_DATABASE_PATH", "/tmp/env.db")
     monkeypatch.setenv("DB_USER", "env-user")
     monkeypatch.setenv("DB_PASSWORD", "env-password")
@@ -61,6 +64,7 @@ def test_load_config_prefers_environment(tmp_path, monkeypatch):
     env_file.write_text(
         "OPENAI_API_KEY=file-key\n"
         "PICTOAGENT_OPENAI_MODEL=file-model\n"
+        "PICTOAGENT_TIME_ZONE=Europe/Berlin\n"
         "PICTOAGENT_DATABASE_PATH=./data/file.db\n"
         "VOCAB_TELEGRAM_BOT_TOKEN=file-vocab-token\n"
         "VOCAB_TELEGRAM_BOT_USERNAME=FileVocabBot\n"
@@ -75,6 +79,7 @@ def test_load_config_prefers_environment(tmp_path, monkeypatch):
 
     assert config.openai_api_key == "env-key"
     assert config.openai_model == "env-model"
+    assert config.app_time_zone == "UTC"
     assert str(config.database_path) == "/tmp/env.db"
     assert config.vocab_telegram_token == "env-vocab-token"
     assert config.vocab_bot_username == "EnvVocabBot"

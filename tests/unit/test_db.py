@@ -4,6 +4,7 @@ from datetime import datetime
 
 import pytest
 
+from src.config import AppConfig
 from src.db import PostgresDatabase, validate_readonly_query
 from src.models import ExpenseAnalysis, MacroBreakdown, NutritionAnalysis, RecipeAnalysis
 from src.vocabulary_review import build_review_prompt_text
@@ -64,6 +65,45 @@ class _FakePool:
 
     def acquire(self) -> _FakeAcquire:
         return _FakeAcquire(self.connection)
+
+
+def test_postgres_database_from_config_uses_app_time_zone():
+    db = PostgresDatabase.from_config(
+        AppConfig(
+            openai_api_key="test-key",
+            db_user="app_user",
+            db_password="secret",
+            db_name="app_db",
+            db_host="127.0.0.1",
+            db_port=5432,
+            app_time_zone="Europe/Paris",
+        )
+    )
+
+    assert db.time_zone == "Europe/Paris"
+
+
+def test_connect_passes_db_session_time_zone(monkeypatch):
+    captured_kwargs = {}
+
+    async def _fake_create_pool(**kwargs):
+        captured_kwargs.update(kwargs)
+        return _FakePool()
+
+    monkeypatch.setattr("src.db.asyncpg.create_pool", _fake_create_pool)
+
+    db = PostgresDatabase(
+        host="127.0.0.1",
+        port=5432,
+        user="app_user",
+        password="secret",
+        database="app_db",
+        time_zone="Europe/Paris",
+    )
+
+    asyncio.run(db.connect())
+
+    assert captured_kwargs["server_settings"] == {"TimeZone": "Europe/Paris"}
 
 
 def test_store_consumption_inserts_fact_row():

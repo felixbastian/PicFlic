@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date
+from difflib import SequenceMatcher
 from typing import Any
+import unicodedata
 
 from openai import OpenAI
 
@@ -15,11 +18,13 @@ from .models import (
     RecipeCollectionResult,
     SQLQueryPlan,
     TextRoutingDecision,
+    VocabularyDescriptionRefinement,
     VocabularyWorkflowResult,
 )
 from .openai_schema import build_strict_openai_schema
 
 logger = logging.getLogger(__name__)
+_VOCAB_DESCRIPTION_STOPWORDS = {"a", "an", "the", "to"}
 
 
 def route_text_workflow(text: str, metadata: dict[str, Any] | None = None) -> TextRoutingDecision:
@@ -144,18 +149,38 @@ def build_vocabulary_response(
         "2. If the user is asking a follow-up question about a word that was already explained in the recent history, "
         "set store_vocabulary=false. "
         "3. When store_vocabulary=true, return french_word as the normalized French word or short phrase, and "
-        "english_description as one concise English description that includes the meaning plus a short explanation. "
+        "english_description as one concise plain-English description that includes the meaning plus a short explanation. "
+        "3a. If the most direct English equivalent is identical to the French word or looks almost the same, do not "
+        "use that near-identical cognate as the main gloss. Instead use a short plain-English paraphrase. "
         "4. When store_vocabulary=false, set french_word and english_description to null. "
         "5. assistant_reply should always be a concise helpful answer in English. "
         "6. If it is a new vocabulary item, assistant_reply should include the English meaning and a short "
         "description. "
+        "6a. When the direct English equivalent is too close to the French word, assistant_reply should also avoid "
+        "using that near-identical cognate as the main gloss and should use a simple paraphrase instead. "
         "7. If it is a follow-up, answer the follow-up directly without pretending to store a new word. "
+        "8. Keep explanations simple and short. Do not overcomplicate them. "
         "Return only the structured result."
     )
     user_text = _build_text_user_text(text, metadata, today)
     result = _call_text_with_schema(prompt, user_text, VocabularyWorkflowResult, "vocabulary_response")
     if result.store_vocabulary and (not result.french_word or not result.english_description):
         raise ValueError("Vocabulary workflow must return french_word and english_description when storing.")
+    if result.store_vocabulary and _is_description_too_close_to_french_word(
+        result.french_word,
+        result.english_description,
+    ):
+        refined = _refine_vocabulary_description(
+            result.french_word,
+            result.english_description,
+            result.assistant_reply,
+        )
+        result = result.model_copy(
+            update={
+                "assistant_reply": refined.assistant_reply,
+                "english_description": refined.english_description,
+            }
+        )
     return result
 
 
@@ -184,6 +209,74 @@ def _build_text_user_text(text: str, metadata: dict[str, Any] | None, today: str
         f"Today's date: {today}\n"
         f"User message: {text}\n"
         f"Metadata: {json.dumps(metadata, ensure_ascii=False)}"
+    )
+
+
+def _normalize_vocab_text(value: str) -> str:
+    lowered = value.strip().lower()
+    decomposed = unicodedata.normalize("NFKD", lowered)
+    without_accents = "".join(char for char in decomposed if not unicodedata.combining(char))
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", without_accents)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _primary_gloss_candidates(english_description: str) -> list[str]:
+    cleaned_description = re.split(r"[;:,.()\n]", english_description, maxsplit=1)[0]
+    tokens = [
+        token
+        for token in _normalize_vocab_text(cleaned_description).split()
+        if token not in _VOCAB_DESCRIPTION_STOPWORDS
+    ]
+    if not tokens:
+        return []
+
+    candidates = [tokens[0]]
+    candidates.append(" ".join(tokens[: min(2, len(tokens))]))
+    candidates.append(" ".join(tokens[: min(3, len(tokens))]))
+    return [candidate for candidate in candidates if candidate]
+
+
+def _is_description_too_close_to_french_word(french_word: str, english_description: str) -> bool:
+    normalized_word = _normalize_vocab_text(french_word)
+    if not normalized_word:
+        return False
+
+    for candidate in _primary_gloss_candidates(english_description):
+        if candidate == normalized_word:
+            return True
+        if len(candidate) >= 4 and SequenceMatcher(None, normalized_word, candidate).ratio() >= 0.88:
+            return True
+
+    return False
+
+
+def _refine_vocabulary_description(
+    french_word: str,
+    english_description: str,
+    assistant_reply: str,
+) -> VocabularyDescriptionRefinement:
+    prompt = (
+        "You are refining a French vocabulary card. "
+        "The current English gloss is too close to the French word, so it is not helpful for learning. "
+        "Rewrite both fields in short plain English. "
+        "Do not use the same-looking English cognate as the main gloss when it is identical or almost identical to "
+        "the French word. "
+        "Use a brief paraphrase instead. "
+        "Keep the explanation simple, natural, and not overcomplicated. "
+        "assistant_reply should stay concise and helpful. "
+        "english_description should remain a compact stored description. "
+        "Return only the structured result."
+    )
+    user_text = (
+        f"French word: {french_word}\n"
+        f"Current english_description: {english_description}\n"
+        f"Current assistant_reply: {assistant_reply}"
+    )
+    return _call_text_with_schema(
+        prompt,
+        user_text,
+        VocabularyDescriptionRefinement,
+        "vocabulary_description_refinement",
     )
 
 

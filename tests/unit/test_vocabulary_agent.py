@@ -105,7 +105,7 @@ def test_process_review_answer_gives_second_chance_for_synonym(monkeypatch):
     monkeypatch.setattr(
         "src.agents.vocabulary_agent.maybe_build_synonym_second_chance",
         lambda review, answer: (
-            'Yes, "salut" also fits, but I am looking for "bonjour". '
+            'Yes, "salut" also fits, but I am looking for a different word. '
             "Salut is more informal. Please try again."
         ),
     )
@@ -116,7 +116,7 @@ def test_process_review_answer_gives_second_chance_for_synonym(monkeypatch):
     assert result.get("review_result") is None
     assert result["dispatch_next_due_review"] is False
     assert result["response"] == (
-        'Yes, "salut" also fits, but I am looking for "bonjour". '
+        'Yes, "salut" also fits, but I am looking for a different word. '
         "Salut is more informal. Please try again."
     )
 
@@ -181,6 +181,58 @@ def test_process_review_answer_retries_sentence_practice_when_usage_is_wrong(mon
     assert result["response"] == (
         'You used "bonjour" like a noun here, but it is a greeting.\n\n'
         'Try one more short French sentence using "bonjour". Reply \'p\' or \'pass\' to skip this part.'
+    )
+
+
+def test_process_review_answer_shows_examples_after_second_failed_sentence_attempt(monkeypatch):
+    db = _FakePostgresDatabase()
+    db.pending_review = DueVocabularyReview(
+        vocabulary_id="vocab-1",
+        user_id="user-123",
+        telegram_user_id=42,
+        french_word="bonjour",
+        english_description="hello",
+        current_review_stage="three_days",
+        next_review_at="2026-03-26T10:00:00",
+        awaiting_sentence=True,
+        sentence_attempts=1,
+    )
+    agent = VocabularyAgent()
+
+    monkeypatch.setattr(
+        "src.agents.vocabulary_agent.evaluate_vocabulary_sentence",
+        lambda review, answer: VocabularySentenceEvaluation(
+            acceptable=False,
+            corrected_sentence=None,
+            feedback='You used "bonjour" like a noun here, but it is a greeting.',
+        ),
+    )
+    monkeypatch.setattr(
+        "src.agents.vocabulary_agent.generate_vocabulary_sentence_examples",
+        lambda review: [
+            "Bonjour, comment allez-vous aujourd'hui ?",
+            "Je dis bonjour a mes voisins chaque matin.",
+            "Elle est entree sans dire bonjour.",
+            "N'oublie pas de dire bonjour a ta professeure.",
+            "Un simple bonjour peut detendre l'atmosphere.",
+        ],
+    )
+
+    result = asyncio.run(agent.process_review_answer(42, "Le bonjour est grand.", db))
+
+    assert db.clear_sentence_prompt_calls == ["vocab-1"]
+    assert db.increment_sentence_attempt_calls == []
+    assert db.mark_used_in_sentence_calls == []
+    assert result["dispatch_next_due_review"] is True
+    assert result["response"] == (
+        'You used "bonjour" like a noun here, but it is a greeting.\n\n'
+        'We will move on for now.\n\n'
+        'Here are 5 example sentences using "bonjour" correctly:\n'
+        "1. Bonjour, comment allez-vous aujourd'hui ?\n"
+        "2. Je dis bonjour a mes voisins chaque matin.\n"
+        "3. Elle est entree sans dire bonjour.\n"
+        "4. N'oublie pas de dire bonjour a ta professeure.\n"
+        "5. Un simple bonjour peut detendre l'atmosphere."
     )
 
 

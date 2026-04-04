@@ -16,6 +16,7 @@ DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "pictoagent.db"
 class AppConfig:
     openai_api_key: str | None
     openai_model: str = "gpt-5"
+    app_time_zone: str = "Europe/Paris"
     database_path: Path = DEFAULT_DATABASE_PATH
     telegram_token: str | None = None
     vocab_telegram_token: str | None = None
@@ -47,6 +48,9 @@ def load_config(env_file: str | Path = DEFAULT_ENV_FILE) -> AppConfig:
         openai_model=os.getenv("PICTOAGENT_OPENAI_MODEL")
         or env_values.get("PICTOAGENT_OPENAI_MODEL")
         or "gpt-5",
+        app_time_zone=os.getenv("PICTOAGENT_TIME_ZONE")
+        or env_values.get("PICTOAGENT_TIME_ZONE")
+        or "Europe/Paris",
         database_path=_resolve_database_path(
             os.getenv("PICTOAGENT_DATABASE_PATH")
             or env_values.get("PICTOAGENT_DATABASE_PATH")
