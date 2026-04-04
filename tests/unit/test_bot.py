@@ -235,9 +235,15 @@ class _FakePostgresDatabase:
         *,
         correct: bool = False,
         shelved: bool = False,
+        request_sentence_practice: bool = False,
     ) -> VocabularyReviewResult:
         self.record_review_calls.append(
-            {"vocabulary_id": vocabulary_id, "correct": correct, "shelved": shelved}
+            {
+                "vocabulary_id": vocabulary_id,
+                "correct": correct,
+                "shelved": shelved,
+                "request_sentence_practice": request_sentence_practice,
+            }
         )
         if self.pending_review is None:
             raise AssertionError("No pending review configured")

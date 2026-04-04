@@ -469,6 +469,40 @@ def test_record_vocabulary_review_result_advances_stage_on_correct_answer():
     assert params == ("vocab-1",)
 
 
+def test_record_vocabulary_review_result_can_queue_sentence_practice():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+    db._pool.connection.fetchrow_results = [
+        {
+            "vocabulary_id": "vocab-1",
+            "user_id": "user-123",
+            "french_word": "bonjour",
+            "current_review_stage": "day",
+        },
+        {
+            "next_review_at": datetime(2026, 3, 26, 10, 0, 0),
+            "current_review_stage": "three_days",
+        },
+    ]
+
+    result = asyncio.run(
+        db.record_vocabulary_review_result(
+            "vocab-1",
+            correct=True,
+            request_sentence_practice=True,
+        )
+    )
+
+    assert result.correct is True
+    assert result.awaiting_sentence is True
+    query, params = db._pool.connection.execute_calls[0]
+    assert "awaiting_review = TRUE" in query
+    assert "awaiting_sentence = TRUE" in query
+    assert "sentence_attempts = 0" in query
+    assert "last_review_prompted_at = CURRENT_TIMESTAMP" in query
+    assert params == ("vocab-1",)
+
+
 def test_record_vocabulary_review_result_shelves_word():
     db = PostgresDatabase()
     db._pool = _FakePool()
@@ -487,6 +521,45 @@ def test_record_vocabulary_review_result_shelves_word():
     query, params = db._pool.connection.execute_calls[0]
     assert "shelf = TRUE" in query
     assert params == ("vocab-2",)
+
+
+def test_mark_vocabulary_used_in_sentence_updates_fact_row():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+
+    asyncio.run(db.mark_vocabulary_used_in_sentence("vocab-7"))
+
+    query, params = db._pool.connection.execute_calls[0]
+    assert "used_in_sentence = TRUE" in query
+    assert "awaiting_sentence = FALSE" in query
+    assert params == ("vocab-7",)
+
+
+def test_increment_vocabulary_sentence_attempts_returns_new_count():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+    db._pool.connection.fetchval_result = 1
+
+    attempts = asyncio.run(db.increment_vocabulary_sentence_attempts("vocab-8"))
+
+    assert attempts == 1
+    query, params = db._pool.connection.fetchval_calls[0]
+    assert "sentence_attempts = COALESCE(sentence_attempts, 0) + 1" in query
+    assert "last_review_prompted_at = CURRENT_TIMESTAMP" in query
+    assert params == ("vocab-8",)
+
+
+def test_clear_vocabulary_sentence_prompt_resets_pending_sentence_state():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+
+    asyncio.run(db.clear_vocabulary_sentence_prompt("vocab-9"))
+
+    query, params = db._pool.connection.execute_calls[0]
+    assert "awaiting_review = FALSE" in query
+    assert "awaiting_sentence = FALSE" in query
+    assert "sentence_attempts = 0" in query
+    assert params == ("vocab-9",)
 
 
 def test_validate_readonly_query_accepts_safe_select():

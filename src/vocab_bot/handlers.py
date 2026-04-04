@@ -104,7 +104,7 @@ async def handle_message(
         result = await agent.process_review_answer(update.effective_user.id, incoming_text, postgres_db)
         await update.message.reply_text(result["response"])
 
-        if result.get("review_result") is None:
+        if not result.get("dispatch_next_due_review"):
             return
 
         next_review_sent = await dispatch_next_due_vocabulary_review_for_user(
@@ -118,7 +118,11 @@ async def handle_message(
                 "event": "vocabulary_bot_review_answered",
                 "telegram_user_id": update.effective_user.id,
                 "next_due_review_sent": next_review_sent,
-                "vocabulary_id": result["review_result"].vocabulary_id,
+                "vocabulary_id": (
+                    result["review_result"].vocabulary_id
+                    if result.get("review_result") is not None
+                    else None
+                ),
             },
         )
     except Exception as exc:

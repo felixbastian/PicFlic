@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import random
 import re
 import unicodedata
 from datetime import timedelta
 from difflib import SequenceMatcher
 import logging
 
-from .models import DueVocabularyReview, VocabularyReviewResult, VocabularyReviewStage, VocabularySynonymHint
+from .models import (
+    DueVocabularyReview,
+    VocabularyReviewResult,
+    VocabularyReviewStage,
+    VocabularySentenceEvaluation,
+    VocabularySynonymHint,
+)
 from .query_utils import _call_text_with_schema
 
 _STAGE_INTERVALS: dict[VocabularyReviewStage, timedelta] = {
@@ -31,6 +38,7 @@ _STAGE_LABELS: dict[VocabularyReviewStage, str] = {
 }
 _SHELF_KEYWORDS = {"shelf", "shelve", "archive", "skip", "pause", "stop"}
 _PASS_KEYWORDS = {"p", "pass"}
+_SENTENCE_PROMPT_PROBABILITY = 0.25
 _APOSTROPHE_VARIANTS = {
     "\u2019": "'",
     "\u2018": "'",
@@ -107,8 +115,26 @@ def build_review_prompt_text(english_description: str) -> str:
     )
 
 
+def build_sentence_prompt_text(french_word: str, *, second_chance: bool = False) -> str:
+    """Build the prompt asking the user to use a vocabulary word in a sentence."""
+    if second_chance:
+        return (
+            f'Try one more short French sentence using "{french_word}". '
+            "Reply 'p' or 'pass' to skip this part."
+        )
+    return (
+        f'Write one short French sentence using "{french_word}". '
+        "Reply 'p' or 'pass' to skip this part."
+    )
+
+
 def build_review_prompt(review: DueVocabularyReview) -> str:
     """Build the outbound Telegram prompt for a due vocabulary review."""
+    if review.awaiting_sentence:
+        return build_sentence_prompt_text(
+            review.french_word,
+            second_chance=review.sentence_attempts > 0,
+        )
     return build_review_prompt_text(review.english_description)
 
 
@@ -137,6 +163,56 @@ def build_review_response(
         f'Not quite. The correct word is "{review.french_word}". '
         f"I will ask you again {retry_label}."
     )
+
+
+def build_sentence_prompt_response(
+    review: DueVocabularyReview,
+    result: VocabularyReviewResult,
+) -> str:
+    """Build the reply after a correct review answer that triggers sentence practice."""
+    return (
+        f"{build_review_response(review, result)}\n\n"
+        f"{build_sentence_prompt_text(review.french_word)}"
+    )
+
+
+def build_sentence_retry_response(review: DueVocabularyReview, feedback: str) -> str:
+    """Build the retry response after an incorrect sentence usage attempt."""
+    cleaned_feedback = feedback.strip()
+    return (
+        f"{cleaned_feedback}\n\n"
+        f'{build_sentence_prompt_text(review.french_word, second_chance=True)}'
+    )
+
+
+def build_sentence_success_response(
+    review: DueVocabularyReview,
+    evaluation: VocabularySentenceEvaluation,
+) -> str:
+    """Build the success response after an acceptable sentence."""
+    corrected_sentence = (evaluation.corrected_sentence or "").strip()
+    feedback = evaluation.feedback.strip()
+    if corrected_sentence:
+        if not feedback:
+            return f'Corrected sentence: "{corrected_sentence}"'
+        return (
+            f"{feedback}\n"
+            f'Corrected sentence: "{corrected_sentence}"'
+        )
+    return feedback or f'Nice. That sentence works with "{review.french_word}".'
+
+
+def build_sentence_skip_response(review: DueVocabularyReview) -> str:
+    """Build the response after the user skips sentence practice."""
+    return f'No problem. We will skip the sentence for "{review.french_word}" and keep going.'
+
+
+def build_sentence_failure_response(review: DueVocabularyReview, feedback: str) -> str:
+    """Build the response after the second failed sentence attempt."""
+    cleaned_feedback = feedback.strip()
+    if cleaned_feedback:
+        return f"{cleaned_feedback}\n\nWe will move on for now."
+    return f'We will move on for now without a sentence for "{review.french_word}".'
 
 
 def build_synonym_second_chance_response(
@@ -189,3 +265,47 @@ def maybe_build_synonym_second_chance(review: DueVocabularyReview, answer: str) 
         return None
 
     return build_synonym_second_chance_response(review, answer, hint.distinction)
+
+
+def should_prompt_for_sentence_practice(
+    review: DueVocabularyReview,
+    *,
+    draw: float | None = None,
+) -> bool:
+    """Return whether this correct answer should branch into sentence practice."""
+    if review.used_in_sentence or review.awaiting_sentence:
+        return False
+    resolved_draw = random.random() if draw is None else draw
+    return resolved_draw < _SENTENCE_PROMPT_PROBABILITY
+
+
+def evaluate_vocabulary_sentence(
+    review: DueVocabularyReview,
+    sentence: str,
+) -> VocabularySentenceEvaluation:
+    """Evaluate whether the user used the target vocabulary word acceptably in a sentence."""
+    prompt = (
+        "You are helping a French vocabulary trainer. "
+        "The user was asked to write one short French sentence using a specific target word. "
+        "Return acceptable=true when the sentence uses the target word correctly and the sentence is understandable, "
+        "even if there are small grammar, spelling, or agreement mistakes that do not seriously hurt understanding. "
+        "Return acceptable=false only when the target word is missing, used with the wrong meaning or function, or "
+        "the sentence is too broken to show correct usage. "
+        "When acceptable=true, provide corrected_sentence as a polished French version of the user's sentence that "
+        "keeps the same meaning, and feedback as one short encouraging English sentence. "
+        "When acceptable=false, set corrected_sentence=null and feedback to a short English explanation of what is "
+        "wrong with the usage and what to fix. "
+        "Be lenient about minor mistakes, but strict about incorrect vocabulary usage. "
+        "Return only the structured result."
+    )
+    user_text = (
+        f"Target French word: {review.french_word}\n"
+        f"English meaning: {review.english_description}\n"
+        f"User sentence: {sentence.strip()}"
+    )
+    return _call_text_with_schema(
+        prompt,
+        user_text,
+        VocabularySentenceEvaluation,
+        "vocabulary_sentence_evaluation",
+    )
