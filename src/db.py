@@ -145,6 +145,7 @@ class PostgresDatabase:
         password: str = "",
         database: str = "app_db",
         cloud_sql_connection_string: str | None = None,
+        time_zone: str = "Europe/Paris",
     ):
         """
         Initialize PostgreSQL database connection.
@@ -164,6 +165,7 @@ class PostgresDatabase:
         self.password = password
         self.database = database
         self.cloud_sql_connection_string = cloud_sql_connection_string
+        self.time_zone = time_zone
         self._pool: Optional[asyncpg.Pool] = None
 
     @classmethod
@@ -180,6 +182,7 @@ class PostgresDatabase:
             password=config.db_password or "",
             database=config.db_name or "app_db",
             cloud_sql_connection_string=config.instance_connection_name,
+            time_zone=config.app_time_zone,
         )
 
     async def connect(self) -> None:
@@ -192,6 +195,7 @@ class PostgresDatabase:
                 "database": self.database,
                 "min_size": 1,
                 "max_size": 10,
+                "server_settings": {"TimeZone": self.time_zone},
             }
             if not str(self.host).startswith("/cloudsql/"):
                 connect_kwargs["port"] = self.port
@@ -201,7 +205,13 @@ class PostgresDatabase:
             )
             logger.info(
                 "Connected to PostgreSQL database",
-                extra={"event": "db_connected", "host": self.host, "port": self.port, "database": self.database},
+                extra={
+                    "event": "db_connected",
+                    "host": self.host,
+                    "port": self.port,
+                    "database": self.database,
+                    "time_zone": self.time_zone,
+                },
             )
         except Exception as e:
             logger.error(

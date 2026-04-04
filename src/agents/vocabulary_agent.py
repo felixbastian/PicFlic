@@ -8,12 +8,13 @@ from ..db import PostgresDatabase
 from ..models import DueVocabularyReview
 from ..vocabulary_review import (
     build_review_response,
-    build_sentence_failure_response,
+    build_sentence_failure_examples_response,
     build_sentence_prompt_response,
     build_sentence_retry_response,
     build_sentence_skip_response,
     build_sentence_success_response,
     evaluate_vocabulary_sentence,
+    generate_vocabulary_sentence_examples,
     is_pass_request,
     is_review_answer_correct,
     is_shelf_request,
@@ -184,8 +185,13 @@ async def _process_sentence_answer(
         }
 
     await db.clear_vocabulary_sentence_prompt(pending_review.vocabulary_id)
+    example_sentences = generate_vocabulary_sentence_examples(pending_review)
     return {
-        "response": build_sentence_failure_response(pending_review, sentence_evaluation.feedback),
+        "response": build_sentence_failure_examples_response(
+            pending_review,
+            sentence_evaluation.feedback,
+            example_sentences,
+        ),
         "review_result": None,
         "dispatch_next_due_review": True,
     }

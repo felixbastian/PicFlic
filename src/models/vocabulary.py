@@ -94,3 +94,20 @@ class VocabularySentenceEvaluation(BaseModel):
     acceptable: bool
     corrected_sentence: str | None = None
     feedback: str
+
+
+class VocabularySentenceExamples(BaseModel):
+    """Example sentences showing correct usage of a vocabulary word."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sentences: list[str] = Field(min_length=5, max_length=5)
+
+
+class VocabularyDescriptionRefinement(BaseModel):
+    """Refined vocabulary phrasing when the direct gloss is too close to the French word."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    assistant_reply: str
+    english_description: str

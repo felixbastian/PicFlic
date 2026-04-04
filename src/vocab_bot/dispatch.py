@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
 
 from telegram.ext import Application
 
@@ -20,21 +19,9 @@ async def dispatch_due_vocabulary_reviews(
     postgres_db: PostgresDatabase,
     limit: int = 100,
 ) -> int:
-    """Send stale pending reminders first, then new due vocabulary review prompts."""
+    """Send newly due vocabulary review prompts without resending already-pending ones."""
     sent_count = 0
-    stale_reviews = await postgres_db.list_stale_vocabulary_review_reminders(
-        limit=limit,
-        resend_after=timedelta(hours=1),
-    )
-    for review in stale_reviews:
-        if await send_vocabulary_review_prompt(application, postgres_db, review):
-            sent_count += 1
-
-    remaining_limit = max(limit - sent_count, 0)
-    if remaining_limit == 0:
-        return sent_count
-
-    due_reviews = await postgres_db.list_due_vocabulary_reviews(limit=remaining_limit)
+    due_reviews = await postgres_db.list_due_vocabulary_reviews(limit=limit)
     for review in due_reviews:
         if await send_vocabulary_review_prompt(application, postgres_db, review):
             sent_count += 1

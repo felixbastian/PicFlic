@@ -350,7 +350,7 @@ def test_dispatch_due_vocabulary_reviews_sends_one_prompt_per_due_review():
     assert postgres_db.mark_prompted_calls == ["vocab-1"]
 
 
-def test_dispatch_due_vocabulary_reviews_resends_stale_pending_before_new_due_reviews():
+def test_dispatch_due_vocabulary_reviews_does_not_resend_stale_pending_reviews():
     application = _FakeApplication()
     postgres_db = _FakePostgresDatabase()
     postgres_db.stale_reviews = [
@@ -378,17 +378,8 @@ def test_dispatch_due_vocabulary_reviews_resends_stale_pending_before_new_due_re
 
     sent_count = asyncio.run(dispatch_due_vocabulary_reviews(application, postgres_db, limit=2))
 
-    assert sent_count == 2
+    assert sent_count == 1
     assert application.bot.sent_messages == [
-        {
-            "chat_id": 42,
-            "text": (
-                "Vocabulary review:\n"
-                "What is the French word for:\nto go\n\n"
-                "Reply with the French word. Reply 'p' or 'pass' to count it as wrong right away. "
-                "Reply 'shelf' if you want me to stop reviewing this word."
-            ),
-        },
         {
             "chat_id": 77,
             "text": (
@@ -399,10 +390,10 @@ def test_dispatch_due_vocabulary_reviews_resends_stale_pending_before_new_due_re
             ),
         },
     ]
-    assert postgres_db.mark_prompted_calls == ["vocab-stale", "vocab-due"]
+    assert postgres_db.mark_prompted_calls == ["vocab-due"]
 
 
-def test_dispatch_due_vocabulary_reviews_resends_pending_sentence_prompt():
+def test_dispatch_due_vocabulary_reviews_does_not_resend_pending_sentence_prompt():
     application = _FakeApplication()
     postgres_db = _FakePostgresDatabase()
     postgres_db.stale_reviews = [
@@ -421,14 +412,9 @@ def test_dispatch_due_vocabulary_reviews_resends_pending_sentence_prompt():
 
     sent_count = asyncio.run(dispatch_due_vocabulary_reviews(application, postgres_db))
 
-    assert sent_count == 1
-    assert application.bot.sent_messages == [
-        {
-            "chat_id": 42,
-            "text": 'Try one more short French sentence using "bonjour". Reply \'p\' or \'pass\' to skip this part.',
-        }
-    ]
-    assert postgres_db.mark_prompted_calls == ["vocab-sentence"]
+    assert sent_count == 0
+    assert application.bot.sent_messages == []
+    assert postgres_db.mark_prompted_calls == []
 
 
 def test_handle_message_shelves_quoted_review_prompt_after_answer():

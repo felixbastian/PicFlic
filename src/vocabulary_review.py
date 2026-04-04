@@ -11,6 +11,7 @@ import logging
 
 from .models import (
     DueVocabularyReview,
+    VocabularySentenceExamples,
     VocabularyReviewResult,
     VocabularyReviewStage,
     VocabularySentenceEvaluation,
@@ -215,6 +216,25 @@ def build_sentence_failure_response(review: DueVocabularyReview, feedback: str) 
     return f'We will move on for now without a sentence for "{review.french_word}".'
 
 
+def build_sentence_failure_examples_response(
+    review: DueVocabularyReview,
+    feedback: str,
+    example_sentences: list[str],
+) -> str:
+    """Build the response after the second failed attempt with example sentences."""
+    base_response = build_sentence_failure_response(review, feedback)
+    cleaned_examples = [sentence.strip() for sentence in example_sentences if sentence.strip()]
+    if not cleaned_examples:
+        return base_response
+
+    example_lines = [f"{index}. {sentence}" for index, sentence in enumerate(cleaned_examples, start=1)]
+    return (
+        f"{base_response}\n\n"
+        f'Here are {len(cleaned_examples)} example sentences using "{review.french_word}" correctly:\n'
+        + "\n".join(example_lines)
+    )
+
+
 def build_synonym_second_chance_response(
     review: DueVocabularyReview,
     answer: str,
@@ -223,7 +243,7 @@ def build_synonym_second_chance_response(
     """Build the retry response when the user gave a plausible synonym."""
     cleaned_distinction = distinction.strip().rstrip(".")
     return (
-        f'Yes, "{answer.strip()}" also fits, but I am looking for "{review.french_word}". '
+        f'Yes, "{answer.strip()}" also fits, but I am looking for a different word. '
         f"{cleaned_distinction}. Please try again."
     )
 
@@ -309,3 +329,35 @@ def evaluate_vocabulary_sentence(
         VocabularySentenceEvaluation,
         "vocabulary_sentence_evaluation",
     )
+
+
+def generate_vocabulary_sentence_examples(review: DueVocabularyReview) -> list[str]:
+    """Generate example French sentences showing correct usage of the target vocabulary."""
+    prompt = (
+        "You are helping a French vocabulary trainer. "
+        "Generate exactly 5 short, natural French example sentences that show correct usage of the target vocabulary. "
+        "Use varied contexts so the learner can see how the word or expression works in practice. "
+        "When the target is a verb or expression, use a grammatically natural inflected form when appropriate instead "
+        "of forcing the raw dictionary form. "
+        "Every sentence must stay faithful to the provided English meaning. "
+        "Return only the structured result."
+    )
+    user_text = (
+        f"Target French word or expression: {review.french_word}\n"
+        f"English meaning: {review.english_description}"
+    )
+    try:
+        result = _call_text_with_schema(
+            prompt,
+            user_text,
+            VocabularySentenceExamples,
+            "vocabulary_sentence_examples",
+        )
+    except Exception:
+        logger.exception(
+            "Failed to generate vocabulary sentence examples",
+            extra={"event": "vocabulary_sentence_examples_failed", "vocabulary_id": review.vocabulary_id},
+        )
+        return []
+
+    return result.sentences
