@@ -21,6 +21,7 @@ from ..models import (
     VocabularyConversationTurn,
 )
 from ..query_utils import call_text_with_schema
+from ..vocabulary_review import is_pass_request
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,11 @@ _DEFAULT_CANDIDATE_LIMIT = 50
 _DEFAULT_SESSION_LIMIT = 100
 _DEFAULT_MAX_USER_TURNS = 5
 _MAX_SELECTED_VOCABULARY = 10
+_PASS_CONVERSATION_CLOSE_MESSAGE = (
+    "Okay, we can stop here for today. "
+    "I enjoyed our chat. "
+    "I'll start a new one when the next daily conversation is due."
+)
 _APOSTROPHE_VARIANTS = {
     "\u2019": "'",
     "\u2018": "'",
@@ -260,25 +266,30 @@ class ResponseGenerator:
         transcript: Sequence[VocabularyConversationTurn],
         user_reply: str,
         *,
-        is_final_turn: bool,
+        core_goal_completed: bool,
     ) -> VocabularyConversationReply:
         prompt = (
             "You continue a short daily Telegram conversation that helps the user learn French vocabulary in context. "
             "The bot should feel proactive, natural, and motivating, not like a quiz. "
             "Continue the conversation based on the transcript and the user's latest reply. "
             "Write mostly in simple natural French. "
-            "Use 1 or 2 selected French vocabulary items exactly as written when they fit naturally, and spread them "
-            "across the conversation instead of forcing all of them at once. "
+            "Use up to 1 or 2 selected French vocabulary items exactly as written when they fit naturally, and spread "
+            "them across the conversation instead of forcing all of them at once. "
+            "Prefer selected words that have been used less often in this conversation. "
+            "If the core daily goal is already complete, it is okay to use no selected word when forcing one would "
+            "sound awkward. "
             "Keep the reply to 2 to 4 short sentences. "
-            "If this is not the final turn, ask a relevant follow-up question or make a small natural comment that "
-            "invites the user to continue. "
-            "If this is the final turn, end warmly and naturally without asking another question. "
+            "If the core daily goal is not complete yet, ask a relevant follow-up question or make a small natural "
+            "comment that invites the user to continue. "
+            "If the core daily goal is already complete, keep the conversation lively and responsive if the user "
+            "wants to continue, and feel free to ask another relevant question or explore the topic further. "
+            "Do not end the conversation just because the core goal was reached. "
             "Do not provide grammar correction here. Return only the structured result."
         )
         user_text = (
             f"Story type: {session.story_type}\n"
             f"Latest user reply: {user_reply}\n"
-            f"Final turn: {'yes' if is_final_turn else 'no'}\n"
+            f"Core daily goal completed: {'yes' if core_goal_completed else 'no'}\n"
             f"User turns completed so far: {session.user_turn_count}/{session.max_user_turns}\n"
             "Selected vocabulary:\n"
             f"{_build_selected_word_lines(selected_words, transcript)}\n"
@@ -296,15 +307,14 @@ class ResponseGenerator:
                 return reply
         except Exception:
             logger.exception("Failed to generate vocabulary conversation reply")
-        return self._fallback_reply(is_final_turn=is_final_turn)
+        return self._fallback_reply(core_goal_completed=core_goal_completed)
 
-    def _fallback_reply(self, *, is_final_turn: bool) -> VocabularyConversationReply:
-        if is_final_turn:
+    def _fallback_reply(self, *, core_goal_completed: bool) -> VocabularyConversationReply:
+        if core_goal_completed:
             return VocabularyConversationReply(
                 reply_message=(
-                    "Merci pour tes réponses aujourd'hui. "
-                    "J'ai bien aimé cette petite conversation avec toi. "
-                    "À bientôt !"
+                    "C'est interessant. "
+                    "Et qu'est-ce qui compte le plus pour toi dans tout ca ?"
                 )
             )
         return VocabularyConversationReply(
@@ -356,13 +366,28 @@ class VocabularyConversationTrainer:
             return False
 
         user_reply = (message.text or "").strip()
-        selected_words = await postgres_db.list_vocabulary_words_by_ids(
-            session.user_id,
-            session.selected_vocabulary_ids,
-        )
         session = await postgres_db.record_vocabulary_conversation_user_reply(
             session.conversation_id,
             user_reply,
+        )
+
+        if is_pass_request(user_reply):
+            await postgres_db.record_vocabulary_conversation_bot_reply(
+                session.conversation_id,
+                _PASS_CONVERSATION_CLOSE_MESSAGE,
+                used_vocabulary_ids=(),
+                complete=True,
+            )
+            try:
+                await message.reply_text(_PASS_CONVERSATION_CLOSE_MESSAGE)
+            except Exception:
+                await postgres_db.mark_vocabulary_conversation_timed_out(session.conversation_id)
+                raise
+            return True
+
+        selected_words = await postgres_db.list_vocabulary_words_by_ids(
+            session.user_id,
+            session.selected_vocabulary_ids,
         )
         transcript = await postgres_db.list_vocabulary_conversation_turns(session.conversation_id)
 
@@ -379,13 +404,13 @@ class VocabularyConversationTrainer:
                 raise
             transcript = await postgres_db.list_vocabulary_conversation_turns(session.conversation_id)
 
-        is_final_turn = session.user_turn_count >= session.max_user_turns
+        core_goal_completed = session.user_turn_count >= session.max_user_turns
         reply = self.response_generator.generate_reply(
             session,
             selected_words,
             transcript,
             user_reply,
-            is_final_turn=is_final_turn,
+            core_goal_completed=core_goal_completed,
         )
         used_vocabulary_ids = self.usage_tracker.extract_used_vocabulary_ids(
             selected_words,
@@ -395,7 +420,7 @@ class VocabularyConversationTrainer:
             session.conversation_id,
             reply.reply_message,
             used_vocabulary_ids=used_vocabulary_ids,
-            complete=is_final_turn,
+            complete=False,
         )
         try:
             await message.reply_text(reply.reply_message)

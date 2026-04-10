@@ -58,7 +58,8 @@ async def start(
 
     await _activate_user(postgres_db, update)
     await update.message.reply_text(
-        "Vocabulary conversation training activated. I will start a short daily chat with you here."
+        "Vocabulary conversation training activated. I will start a short daily chat with you here. "
+        "Reply 'p' or 'pass' anytime to stop today's conversation."
     )
 
 

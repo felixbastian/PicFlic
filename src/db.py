@@ -57,6 +57,7 @@ _REVIEW_STAGE_NEXT: dict[VocabularyReviewStage, VocabularyReviewStage | None] = 
     "week": "month",
     "month": None,
 }
+_VOCAB_CONVERSATION_TIMEOUT_SQL = "INTERVAL '23 hours'"
 
 
 def _normalize_due_vocabulary_review_row(row: Any) -> dict[str, Any]:
@@ -679,7 +680,10 @@ class PostgresDatabase:
                 """
                 WITH expired AS (
                     UPDATE fact_vocab_conversation_sessions
-                    SET status = 'timed_out',
+                    SET status = CASE
+                            WHEN user_turn_count >= max_user_turns THEN 'completed'
+                            ELSE 'timed_out'
+                        END,
                         completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
                     WHERE status = 'active'
                       AND timeout_at <= CURRENT_TIMESTAMP
@@ -807,7 +811,7 @@ class PostgresDatabase:
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    """
+                    f"""
                     INSERT INTO fact_vocab_conversation_sessions (
                         conversation_id,
                         user_id,
@@ -832,7 +836,7 @@ class PostgresDatabase:
                         1,
                         $6,
                         CURRENT_TIMESTAMP,
-                        CURRENT_TIMESTAMP + INTERVAL '36 hours'
+                        CURRENT_TIMESTAMP + {_VOCAB_CONVERSATION_TIMEOUT_SQL}
                     )
                     """,
                     conversation_id,
@@ -1082,10 +1086,6 @@ class PostgresDatabase:
                         turn_count = turn_count + 1,
                         status = CASE WHEN $3 THEN 'completed' ELSE status END,
                         last_activity_at = CURRENT_TIMESTAMP,
-                        timeout_at = CASE
-                            WHEN $3 THEN timeout_at
-                            ELSE CURRENT_TIMESTAMP + INTERVAL '36 hours'
-                        END,
                         completed_at = CASE
                             WHEN $3 THEN CURRENT_TIMESTAMP
                             ELSE completed_at

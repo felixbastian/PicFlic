@@ -390,7 +390,8 @@ def test_expire_stale_vocabulary_conversations_returns_expired_count():
     assert expired_count == 2
     query, params = db._pool.connection.fetchval_calls[0]
     assert "fact_vocab_conversation_sessions" in query
-    assert "status = 'timed_out'" in query
+    assert "WHEN user_turn_count >= max_user_turns THEN 'completed'" in query
+    assert "ELSE 'timed_out'" in query
     assert params == ()
 
 
@@ -462,6 +463,7 @@ def test_create_vocabulary_conversation_session_inserts_session_and_opening_turn
     first_query, first_params = db._pool.connection.execute_calls[0]
     second_query, second_params = db._pool.connection.execute_calls[1]
     assert "INSERT INTO fact_vocab_conversation_sessions" in first_query
+    assert "23 hours" in first_query
     assert first_params[1] == "user-123"
     assert first_params[2] == 42
     assert first_params[3] == "ask_me_something"
@@ -532,6 +534,7 @@ def test_record_vocabulary_conversation_user_reply_updates_session_and_inserts_t
     update_query, update_params = db._pool.connection.fetchrow_calls[0]
     insert_query, insert_params = db._pool.connection.execute_calls[0]
     assert "UPDATE fact_vocab_conversation_sessions" in update_query
+    assert "CURRENT_TIMESTAMP + INTERVAL '36 hours'" not in update_query
     assert update_params == (str(conversation_id), True, False)
     assert "INSERT INTO fact_vocab_conversation_turns" in insert_query
     assert insert_params[1] == str(conversation_id)

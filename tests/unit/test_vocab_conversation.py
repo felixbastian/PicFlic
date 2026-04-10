@@ -311,7 +311,7 @@ def test_handle_active_conversation_message_sends_feedback_then_reply(monkeypatc
     monkeypatch.setattr(
         trainer.response_generator,
         "generate_reply",
-        lambda session, selected_words, transcript, user_reply, is_final_turn=False: VocabularyConversationReply(
+        lambda session, selected_words, transcript, user_reply, core_goal_completed=False: VocabularyConversationReply(
             reply_message="C'est un beau projet. Qu'est-ce qui te motive le plus ?"
         ),
     )
@@ -333,3 +333,89 @@ def test_handle_active_conversation_message_sends_feedback_then_reply(monkeypatc
         }
     ]
     assert db.increment_usage_calls == [["vocab-2"]]
+
+
+def test_handle_active_conversation_message_keeps_conversation_active_after_core_goal(monkeypatch):
+    trainer = VocabularyConversationTrainer()
+    db = _FakeConversationDb()
+    db.active_session = db.active_session.model_copy(
+        update={
+            "user_turn_count": 4,
+            "max_user_turns": 5,
+            "turn_count": 5,
+        }
+    )
+    message = _FakeMessage("Je veux vraiment continuer cette conversation.")
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=42),
+        message=message,
+    )
+    captured_flags: list[bool] = []
+
+    monkeypatch.setattr(
+        trainer.feedback_generator,
+        "generate_feedback",
+        lambda session, selected_words, transcript, user_reply: VocabularyConversationFeedback(
+            should_send_feedback=False,
+            feedback_message=None,
+        ),
+    )
+
+    def _generate_reply(session, selected_words, transcript, user_reply, core_goal_completed=False):
+        captured_flags.append(core_goal_completed)
+        return VocabularyConversationReply(
+            reply_message="Ton projet a l'air passionnant. Qu'est-ce qui t'enthousiasme encore le plus ?"
+        )
+
+    monkeypatch.setattr(trainer.response_generator, "generate_reply", _generate_reply)
+
+    handled = asyncio.run(trainer.handle_active_conversation_message(update, db))
+
+    assert handled is True
+    assert captured_flags == [True]
+    assert message.replies == [
+        "Ton projet a l'air passionnant. Qu'est-ce qui t'enthousiasme encore le plus ?"
+    ]
+    assert db.bot_reply_calls == [
+        {
+            "conversation_id": "conversation-1",
+            "text": "Ton projet a l'air passionnant. Qu'est-ce qui t'enthousiasme encore le plus ?",
+            "used_vocabulary_ids": ["vocab-2"],
+            "complete": False,
+        }
+    ]
+    assert db.active_session.status == "active"
+    assert db.increment_usage_calls == [["vocab-2"]]
+
+
+def test_handle_active_conversation_message_pass_finishes_conversation(monkeypatch):
+    trainer = VocabularyConversationTrainer()
+    db = _FakeConversationDb()
+    message = _FakeMessage("pass")
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=42),
+        message=message,
+    )
+
+    def _should_not_run(*args, **kwargs):
+        raise AssertionError("feedback and reply generation should be skipped for pass requests")
+
+    monkeypatch.setattr(trainer.feedback_generator, "generate_feedback", _should_not_run)
+    monkeypatch.setattr(trainer.response_generator, "generate_reply", _should_not_run)
+
+    handled = asyncio.run(trainer.handle_active_conversation_message(update, db))
+
+    assert handled is True
+    assert message.replies == [
+        "Okay, we can stop here for today. I enjoyed our chat. I'll start a new one when the next daily conversation is due."
+    ]
+    assert db.bot_reply_calls == [
+        {
+            "conversation_id": "conversation-1",
+            "text": "Okay, we can stop here for today. I enjoyed our chat. I'll start a new one when the next daily conversation is due.",
+            "used_vocabulary_ids": [],
+            "complete": True,
+        }
+    ]
+    assert db.active_session.status == "completed"
+    assert db.increment_usage_calls == []
