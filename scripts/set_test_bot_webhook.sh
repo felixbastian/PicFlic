@@ -50,3 +50,15 @@ if [[ -n "${VOCAB_TELEGRAM_BOT_TOKEN:-}" ]]; then
     exit 1
   fi
 fi
+
+if [[ -n "${VOCAB_CONVERSATION_TELEGRAM_BOT_TOKEN:-}" ]]; then
+  VOCAB_CONVERSATION_RESPONSE="$(
+    curl -fsS -X POST "https://api.telegram.org/bot${VOCAB_CONVERSATION_TELEGRAM_BOT_TOKEN}/setWebhook" \
+      -d "url=${BASE_URL}/webhook/telegram/vocabulary-conversation"
+  )"
+  echo "Vocab conversation bot: $VOCAB_CONVERSATION_RESPONSE"
+
+  if ! grep -q '"ok":true' <<<"$VOCAB_CONVERSATION_RESPONSE"; then
+    exit 1
+  fi
+fi

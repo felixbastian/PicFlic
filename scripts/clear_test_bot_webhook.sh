@@ -27,3 +27,10 @@ if [[ -n "${VOCAB_TELEGRAM_BOT_TOKEN:-}" ]]; then
   VOCAB_RESPONSE="$(curl -fsS -X POST "https://api.telegram.org/bot${VOCAB_TELEGRAM_BOT_TOKEN}/deleteWebhook")"
   echo "Vocab bot: $VOCAB_RESPONSE"
 fi
+
+if [[ -n "${VOCAB_CONVERSATION_TELEGRAM_BOT_TOKEN:-}" ]]; then
+  VOCAB_CONVERSATION_RESPONSE="$(
+    curl -fsS -X POST "https://api.telegram.org/bot${VOCAB_CONVERSATION_TELEGRAM_BOT_TOKEN}/deleteWebhook"
+  )"
+  echo "Vocab conversation bot: $VOCAB_CONVERSATION_RESPONSE"
+fi

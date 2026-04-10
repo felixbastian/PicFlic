@@ -21,6 +21,8 @@ class AppConfig:
     telegram_token: str | None = None
     vocab_telegram_token: str | None = None
     vocab_bot_username: str = "VocabTrainBot"
+    vocab_conversation_telegram_token: str | None = None
+    vocab_conversation_bot_username: str = "VocabConversationBot"
     echo_fallback_image_url: str | None = None
     db_user: str | None = None
     db_password: str | None = None
@@ -37,6 +39,10 @@ class AppConfig:
     @property
     def vocab_bot_link(self) -> str:
         return f"https://t.me/{self.vocab_bot_username}"
+
+    @property
+    def vocab_conversation_bot_link(self) -> str:
+        return f"https://t.me/{self.vocab_conversation_bot_username}"
 
 
 @lru_cache(maxsize=1)
@@ -61,6 +67,11 @@ def load_config(env_file: str | Path = DEFAULT_ENV_FILE) -> AppConfig:
         vocab_bot_username=os.getenv("VOCAB_TELEGRAM_BOT_USERNAME")
         or env_values.get("VOCAB_TELEGRAM_BOT_USERNAME")
         or "VocabTrainBot",
+        vocab_conversation_telegram_token=os.getenv("VOCAB_CONVERSATION_TELEGRAM_BOT_TOKEN")
+        or env_values.get("VOCAB_CONVERSATION_TELEGRAM_BOT_TOKEN"),
+        vocab_conversation_bot_username=os.getenv("VOCAB_CONVERSATION_TELEGRAM_BOT_USERNAME")
+        or env_values.get("VOCAB_CONVERSATION_TELEGRAM_BOT_USERNAME")
+        or "VocabConversationBot",
         echo_fallback_image_url=os.getenv("PICTOAGENT_ECHO_FALLBACK_IMAGE_URL")
         or env_values.get("PICTOAGENT_ECHO_FALLBACK_IMAGE_URL"),
         db_user=os.getenv("DB_USER") or env_values.get("DB_USER"),

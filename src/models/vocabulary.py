@@ -7,6 +7,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 VocabularyReviewStage = Literal["day", "three_days", "week", "month"]
+ConversationStoryType = Literal["ask_me_something", "tell_me_something"]
+ConversationStatus = Literal["active", "completed", "timed_out"]
+ConversationTurnType = Literal[
+    "bot_opening",
+    "user_reply",
+    "bot_feedback",
+    "bot_reply",
+    "bot_closing",
+]
 
 
 class VocabularyWorkflowResult(BaseModel):
@@ -47,6 +56,88 @@ class DueVocabularyReview(BaseModel):
     used_in_sentence: bool = False
     awaiting_sentence: bool = False
     sentence_attempts: int = 0
+
+
+class VocabularyConversationEligibleUser(BaseModel):
+    """A Telegram user who can receive a proactive vocabulary conversation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str
+    telegram_user_id: int
+
+
+class ConversationVocabularyCandidate(BaseModel):
+    """A vocabulary item that can be used in a conversation-training session."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    vocabulary_id: str
+    user_id: str
+    french_word: str
+    english_description: str
+    number_of_usages_by_conversation_trainer: int = 0
+    finished: bool = False
+
+
+class VocabularyConversationSession(BaseModel):
+    """Active or historical state for one bot-started conversation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    conversation_id: str
+    user_id: str
+    telegram_user_id: int
+    story_type: ConversationStoryType
+    status: ConversationStatus
+    user_turn_count: int = 0
+    max_user_turns: int = 5
+    turn_count: int = 0
+    selected_vocabulary_ids: list[str] = Field(default_factory=list)
+    last_activity_at: datetime | None = None
+    timeout_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class VocabularyConversationTurn(BaseModel):
+    """One stored turn inside a bot-started vocabulary conversation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    conversation_turn_id: str
+    conversation_id: str
+    turn_index: int
+    turn_type: ConversationTurnType
+    text: str
+    used_vocabulary_ids: list[str] = Field(default_factory=list)
+    created_at: datetime | None = None
+
+
+class VocabularyConversationOpeningPlan(BaseModel):
+    """Opening plan for a new proactive vocabulary conversation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    story_type: ConversationStoryType
+    selected_vocabulary_ids: list[str] = Field(min_length=1, max_length=10)
+    opening_message: str
+
+
+class VocabularyConversationFeedback(BaseModel):
+    """Short coaching feedback for the user's latest reply."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    should_send_feedback: bool
+    feedback_message: str | None = None
+
+
+class VocabularyConversationReply(BaseModel):
+    """Main conversational reply after the user's latest answer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reply_message: str
 
 
 class VocabularyReviewResult(BaseModel):
