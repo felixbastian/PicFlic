@@ -34,7 +34,7 @@ Use the dedicated Telegram test bot locally so you can exercise the webhook flow
    - keep the `PicFlicBot-Dev` token in `TELEGRAM_BOT_TOKEN`
    - keep the `DevVocabTrainBot` token in `VOCAB_TELEGRAM_BOT_TOKEN`
    - keep `VOCAB_TELEGRAM_BOT_USERNAME=DevVocabTrainBot`
-   - set `PICTOAGENT_REVIEW_JOB_SECRET` if you want to trigger the vocabulary review job endpoint locally
+   - set `PICTOAGENT_REVIEW_JOB_SECRET` if you want to trigger the vocabulary review job endpoint  locally
    - if you want local `fact_consumption` writes, also set:
      - `DB_USER`
      - `DB_PASSWORD`
