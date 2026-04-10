@@ -1,6 +1,7 @@
 """Separate vocabulary review bot package."""
 
 from .application import create_vocabulary_telegram_application
+from .conversation import VocabularyConversationTrainer
 from .dispatch import (
     dispatch_due_vocabulary_reviews,
     dispatch_next_due_vocabulary_review_for_user,
@@ -9,6 +10,7 @@ from .dispatch import (
 from .handlers import handle_message, start
 
 __all__ = [
+    "VocabularyConversationTrainer",
     "create_vocabulary_telegram_application",
     "dispatch_due_vocabulary_reviews",
     "dispatch_next_due_vocabulary_review_for_user",

@@ -11,6 +11,8 @@ def test_load_config_reads_dotenv(tmp_path, monkeypatch):
     monkeypatch.delenv("PICTOAGENT_REVIEW_JOB_SECRET", raising=False)
     monkeypatch.delenv("VOCAB_TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("VOCAB_TELEGRAM_BOT_USERNAME", raising=False)
+    monkeypatch.delenv("VOCAB_CONVERSATION_TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("VOCAB_CONVERSATION_TELEGRAM_BOT_USERNAME", raising=False)
     load_config.cache_clear()
 
     env_file = tmp_path / ".env"
@@ -21,6 +23,8 @@ def test_load_config_reads_dotenv(tmp_path, monkeypatch):
         "PICTOAGENT_DATABASE_PATH=./data/test.db\n"
         "VOCAB_TELEGRAM_BOT_TOKEN=vocab-token\n"
         "VOCAB_TELEGRAM_BOT_USERNAME=VocabTrainBot\n"
+        "VOCAB_CONVERSATION_TELEGRAM_BOT_TOKEN=conversation-token\n"
+        "VOCAB_CONVERSATION_TELEGRAM_BOT_USERNAME=VocabConversationBot\n"
         "DB_USER=app_user\n"
         "DB_PASSWORD=secret\n"
         "DB_NAME=app_db\n"
@@ -38,6 +42,9 @@ def test_load_config_reads_dotenv(tmp_path, monkeypatch):
     assert config.vocab_telegram_token == "vocab-token"
     assert config.vocab_bot_username == "VocabTrainBot"
     assert config.vocab_bot_link == "https://t.me/VocabTrainBot"
+    assert config.vocab_conversation_telegram_token == "conversation-token"
+    assert config.vocab_conversation_bot_username == "VocabConversationBot"
+    assert config.vocab_conversation_bot_link == "https://t.me/VocabConversationBot"
     assert config.db_user == "app_user"
     assert config.db_password == "secret"
     assert config.db_name == "app_db"
@@ -58,6 +65,8 @@ def test_load_config_prefers_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("PICTOAGENT_REVIEW_JOB_SECRET", "env-job-secret")
     monkeypatch.setenv("VOCAB_TELEGRAM_BOT_TOKEN", "env-vocab-token")
     monkeypatch.setenv("VOCAB_TELEGRAM_BOT_USERNAME", "EnvVocabBot")
+    monkeypatch.setenv("VOCAB_CONVERSATION_TELEGRAM_BOT_TOKEN", "env-conversation-token")
+    monkeypatch.setenv("VOCAB_CONVERSATION_TELEGRAM_BOT_USERNAME", "EnvConversationBot")
     load_config.cache_clear()
 
     env_file = tmp_path / ".env"
@@ -68,6 +77,8 @@ def test_load_config_prefers_environment(tmp_path, monkeypatch):
         "PICTOAGENT_DATABASE_PATH=./data/file.db\n"
         "VOCAB_TELEGRAM_BOT_TOKEN=file-vocab-token\n"
         "VOCAB_TELEGRAM_BOT_USERNAME=FileVocabBot\n"
+        "VOCAB_CONVERSATION_TELEGRAM_BOT_TOKEN=file-conversation-token\n"
+        "VOCAB_CONVERSATION_TELEGRAM_BOT_USERNAME=FileConversationBot\n"
         "DB_USER=file-user\n"
         "DB_PASSWORD=file-password\n"
         "DB_NAME=file-db\n"
@@ -84,6 +95,9 @@ def test_load_config_prefers_environment(tmp_path, monkeypatch):
     assert config.vocab_telegram_token == "env-vocab-token"
     assert config.vocab_bot_username == "EnvVocabBot"
     assert config.vocab_bot_link == "https://t.me/EnvVocabBot"
+    assert config.vocab_conversation_telegram_token == "env-conversation-token"
+    assert config.vocab_conversation_bot_username == "EnvConversationBot"
+    assert config.vocab_conversation_bot_link == "https://t.me/EnvConversationBot"
     assert config.db_user == "env-user"
     assert config.db_password == "env-password"
     assert config.db_name == "env-db"

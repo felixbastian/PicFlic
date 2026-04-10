@@ -13,11 +13,15 @@ import asyncpg
 
 from .config import AppConfig
 from .models import (
+    ConversationVocabularyCandidate,
     DueVocabularyReview,
     ExpenseAnalysis,
     ImageRecord,
     ReferencedVocabularyReview,
     RecipeAnalysis,
+    VocabularyConversationEligibleUser,
+    VocabularyConversationSession,
+    VocabularyConversationTurn,
     VocabularyReviewResult,
     VocabularyReviewStage,
 )
@@ -53,6 +57,7 @@ _REVIEW_STAGE_NEXT: dict[VocabularyReviewStage, VocabularyReviewStage | None] = 
     "week": "month",
     "month": None,
 }
+_VOCAB_CONVERSATION_TIMEOUT_SQL = "INTERVAL '23 hours'"
 
 
 def _normalize_due_vocabulary_review_row(row: Any) -> dict[str, Any]:
@@ -62,6 +67,57 @@ def _normalize_due_vocabulary_review_row(row: Any) -> dict[str, Any]:
         field_value = normalized.get(field_name)
         if isinstance(field_value, uuid.UUID):
             normalized[field_name] = str(field_value)
+    return normalized
+
+
+def _normalize_string_id_list(values: Any) -> list[str]:
+    if not values:
+        return []
+    normalized_values: list[str] = []
+    for value in values:
+        if isinstance(value, uuid.UUID):
+            normalized_values.append(str(value))
+            continue
+        normalized_values.append(str(value))
+    return normalized_values
+
+
+def _normalize_conversation_session_row(row: Any) -> dict[str, Any]:
+    normalized = dict(row)
+    for field_name in ("conversation_id", "user_id"):
+        field_value = normalized.get(field_name)
+        if isinstance(field_value, uuid.UUID):
+            normalized[field_name] = str(field_value)
+    normalized["selected_vocabulary_ids"] = _normalize_string_id_list(
+        normalized.get("selected_vocabulary_ids")
+    )
+    return normalized
+
+
+def _normalize_conversation_turn_row(row: Any) -> dict[str, Any]:
+    normalized = dict(row)
+    for field_name in ("conversation_turn_id", "conversation_id"):
+        field_value = normalized.get(field_name)
+        if isinstance(field_value, uuid.UUID):
+            normalized[field_name] = str(field_value)
+    normalized["used_vocabulary_ids"] = _normalize_string_id_list(normalized.get("used_vocabulary_ids"))
+    return normalized
+
+
+def _normalize_conversation_candidate_row(row: Any) -> dict[str, Any]:
+    normalized = dict(row)
+    for field_name in ("vocabulary_id", "user_id"):
+        field_value = normalized.get(field_name)
+        if isinstance(field_value, uuid.UUID):
+            normalized[field_name] = str(field_value)
+    return normalized
+
+
+def _normalize_conversation_user_row(row: Any) -> dict[str, Any]:
+    normalized = dict(row)
+    user_id = normalized.get("user_id")
+    if isinstance(user_id, uuid.UUID):
+        normalized["user_id"] = str(user_id)
     return normalized
 
 
@@ -234,6 +290,7 @@ class PostgresDatabase:
         first_name: Optional[str] = None,
         last_name: Optional[str] = None,
         has_vocab_bot_activated: bool | None = None,
+        has_vocab_conversation_bot_activated: bool | None = None,
     ) -> str:
         """
         Get or create a user in dim_user table.
@@ -273,7 +330,11 @@ class PostgresDatabase:
                         username = $3,
                         first_name = $4,
                         last_name = $5,
-                        has_vocab_bot_activated = COALESCE($6, has_vocab_bot_activated)
+                        has_vocab_bot_activated = COALESCE($6, has_vocab_bot_activated),
+                        has_vocab_conversation_bot_activated = COALESCE(
+                            $7,
+                            has_vocab_conversation_bot_activated
+                        )
                     WHERE user_id = $1
                     """,
                     resolved_user_id,
@@ -282,6 +343,7 @@ class PostgresDatabase:
                     first_name,
                     last_name,
                     has_vocab_bot_activated,
+                    has_vocab_conversation_bot_activated,
                 )
                 logger.info(
                     "Warehouse user already exists",
@@ -300,9 +362,10 @@ class PostgresDatabase:
                         username,
                         first_name,
                         last_name,
-                        has_vocab_bot_activated
+                        has_vocab_bot_activated,
+                        has_vocab_conversation_bot_activated
                     )
-                    VALUES ($1, $2, $3, $4, $5, COALESCE($6, FALSE))
+                    VALUES ($1, $2, $3, $4, $5, COALESCE($6, FALSE), COALESCE($7, FALSE))
                     """,
                     user_id,
                     telegram_user_id,
@@ -310,6 +373,7 @@ class PostgresDatabase:
                     first_name,
                     last_name,
                     has_vocab_bot_activated,
+                    has_vocab_conversation_bot_activated,
                 )
                 logger.info(
                     "Created warehouse user",
@@ -329,6 +393,22 @@ class PostgresDatabase:
             activated = await conn.fetchval(
                 """
                 SELECT COALESCE(has_vocab_bot_activated, FALSE)
+                FROM dim_user
+                WHERE user_id = $1
+                """,
+                user_id,
+            )
+            return bool(activated)
+
+    async def has_vocab_conversation_bot_activated(self, user_id: str) -> bool:
+        """Return whether the user has activated the separate conversation bot."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            activated = await conn.fetchval(
+                """
+                SELECT COALESCE(has_vocab_conversation_bot_activated, FALSE)
                 FROM dim_user
                 WHERE user_id = $1
                 """,
@@ -590,6 +670,473 @@ class PostgresDatabase:
                 logger.error("Failed to store vocabulary for user %s: %s", user_id, e)
                 raise
 
+    async def expire_stale_vocabulary_conversations(self) -> int:
+        """Mark expired active vocabulary conversations as timed out."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            expired_count = await conn.fetchval(
+                """
+                WITH expired AS (
+                    UPDATE fact_vocab_conversation_sessions
+                    SET status = CASE
+                            WHEN user_turn_count >= max_user_turns THEN 'completed'
+                            ELSE 'timed_out'
+                        END,
+                        completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
+                    WHERE status = 'active'
+                      AND timeout_at <= CURRENT_TIMESTAMP
+                    RETURNING 1
+                )
+                SELECT COUNT(*)
+                FROM expired
+                """
+            )
+            return int(expired_count or 0)
+
+    async def list_users_ready_for_vocabulary_conversations(
+        self,
+        limit: int = 100,
+    ) -> list[VocabularyConversationEligibleUser]:
+        """List Telegram users who can receive a new proactive vocabulary conversation."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    u.user_id,
+                    u.telegram_user_id
+                FROM dim_user u
+                WHERE u.telegram_user_id IS NOT NULL
+                  AND COALESCE(u.has_vocab_conversation_bot_activated, FALSE) = TRUE
+                  AND EXISTS (
+                      SELECT 1
+                      FROM fact_vocabulary v
+                      WHERE v.user_id = u.user_id
+                        AND v.shelf = FALSE
+                        AND v.french_word IS NOT NULL
+                        AND v.english_description IS NOT NULL
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM fact_vocab_conversation_sessions c
+                      WHERE c.user_id = u.user_id
+                        AND c.status = 'active'
+                        AND c.timeout_at > CURRENT_TIMESTAMP
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM fact_vocabulary pending
+                      WHERE pending.user_id = u.user_id
+                        AND pending.shelf = FALSE
+                        AND (
+                            pending.awaiting_review = TRUE
+                            OR COALESCE(pending.awaiting_sentence, FALSE) = TRUE
+                        )
+                  )
+                ORDER BY u.user_id
+                LIMIT $1
+                """,
+                limit,
+            )
+            return [
+                VocabularyConversationEligibleUser.model_validate(_normalize_conversation_user_row(row))
+                for row in rows
+            ]
+
+    async def list_vocabulary_conversation_candidates(
+        self,
+        user_id: str,
+        limit: int = 50,
+    ) -> list[ConversationVocabularyCandidate]:
+        """Load candidate vocabulary items for a proactive conversation."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    vocabulary_id,
+                    user_id,
+                    french_word,
+                    english_description,
+                    COALESCE(number_of_usages_by_conversation_trainer, 0)
+                        AS number_of_usages_by_conversation_trainer,
+                    COALESCE(finished, FALSE) AS finished
+                FROM fact_vocabulary
+                WHERE user_id = $1
+                  AND shelf = FALSE
+                  AND french_word IS NOT NULL
+                  AND english_description IS NOT NULL
+                ORDER BY
+                    COALESCE(finished, FALSE) ASC,
+                    COALESCE(number_of_usages_by_conversation_trainer, 0) ASC,
+                    created_at DESC
+                LIMIT $2
+                """,
+                user_id,
+                limit,
+            )
+            return [
+                ConversationVocabularyCandidate.model_validate(
+                    _normalize_conversation_candidate_row(row)
+                )
+                for row in rows
+            ]
+
+    async def create_vocabulary_conversation_session(
+        self,
+        user_id: str,
+        telegram_user_id: int,
+        story_type: str,
+        selected_vocabulary_ids: Sequence[str],
+        opening_message: str,
+        *,
+        opening_used_vocabulary_ids: Sequence[str] = (),
+        max_user_turns: int = 5,
+    ) -> str:
+        """Create a new active vocabulary conversation session and store the opening turn."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        conversation_id = str(uuid.uuid4())
+        conversation_turn_id = str(uuid.uuid4())
+        selected_ids = [str(vocabulary_id) for vocabulary_id in selected_vocabulary_ids]
+        opening_used_ids = [str(vocabulary_id) for vocabulary_id in opening_used_vocabulary_ids]
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    f"""
+                    INSERT INTO fact_vocab_conversation_sessions (
+                        conversation_id,
+                        user_id,
+                        telegram_user_id,
+                        story_type,
+                        status,
+                        user_turn_count,
+                        max_user_turns,
+                        turn_count,
+                        selected_vocabulary_ids,
+                        last_activity_at,
+                        timeout_at
+                    )
+                    VALUES (
+                        $1,
+                        $2,
+                        $3,
+                        $4,
+                        'active',
+                        0,
+                        $5,
+                        1,
+                        $6,
+                        CURRENT_TIMESTAMP,
+                        CURRENT_TIMESTAMP + {_VOCAB_CONVERSATION_TIMEOUT_SQL}
+                    )
+                    """,
+                    conversation_id,
+                    user_id,
+                    telegram_user_id,
+                    story_type,
+                    max_user_turns,
+                    selected_ids,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO fact_vocab_conversation_turns (
+                        conversation_turn_id,
+                        conversation_id,
+                        turn_index,
+                        turn_type,
+                        text,
+                        used_vocabulary_ids
+                    )
+                    VALUES ($1, $2, 1, 'bot_opening', $3, $4)
+                    """,
+                    conversation_turn_id,
+                    conversation_id,
+                    opening_message,
+                    opening_used_ids,
+                )
+        return conversation_id
+
+    async def get_active_vocabulary_conversation(
+        self,
+        telegram_user_id: int,
+    ) -> VocabularyConversationSession | None:
+        """Return the active vocabulary conversation for a Telegram user, if one exists."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    conversation_id,
+                    user_id,
+                    telegram_user_id,
+                    story_type,
+                    status,
+                    user_turn_count,
+                    max_user_turns,
+                    turn_count,
+                    selected_vocabulary_ids,
+                    last_activity_at,
+                    timeout_at,
+                    completed_at
+                FROM fact_vocab_conversation_sessions
+                WHERE telegram_user_id = $1
+                  AND status = 'active'
+                  AND timeout_at > CURRENT_TIMESTAMP
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                telegram_user_id,
+            )
+            if row is None:
+                return None
+            return VocabularyConversationSession.model_validate(
+                _normalize_conversation_session_row(row)
+            )
+
+    async def list_vocabulary_conversation_turns(
+        self,
+        conversation_id: str,
+    ) -> list[VocabularyConversationTurn]:
+        """Return the transcript for a stored vocabulary conversation."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    conversation_turn_id,
+                    conversation_id,
+                    turn_index,
+                    turn_type,
+                    text,
+                    used_vocabulary_ids,
+                    created_at
+                FROM fact_vocab_conversation_turns
+                WHERE conversation_id = $1
+                ORDER BY turn_index ASC
+                """,
+                conversation_id,
+            )
+            return [
+                VocabularyConversationTurn.model_validate(_normalize_conversation_turn_row(row))
+                for row in rows
+            ]
+
+    async def list_vocabulary_words_by_ids(
+        self,
+        user_id: str,
+        vocabulary_ids: Sequence[str],
+    ) -> list[ConversationVocabularyCandidate]:
+        """Load a stable ordered subset of vocabulary items by id."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        normalized_ids = [str(vocabulary_id) for vocabulary_id in vocabulary_ids]
+        if not normalized_ids:
+            return []
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    vocabulary_id,
+                    user_id,
+                    french_word,
+                    english_description,
+                    COALESCE(number_of_usages_by_conversation_trainer, 0)
+                        AS number_of_usages_by_conversation_trainer,
+                    COALESCE(finished, FALSE) AS finished
+                FROM fact_vocabulary
+                WHERE user_id = $1
+                  AND vocabulary_id::text = ANY($2::TEXT[])
+                ORDER BY array_position($2::TEXT[], vocabulary_id::text)
+                """,
+                user_id,
+                normalized_ids,
+            )
+            return [
+                ConversationVocabularyCandidate.model_validate(
+                    _normalize_conversation_candidate_row(row)
+                )
+                for row in rows
+            ]
+
+    async def record_vocabulary_conversation_user_reply(
+        self,
+        conversation_id: str,
+        text: str,
+    ) -> VocabularyConversationSession:
+        """Store a user reply and advance the session counters."""
+        return await self._append_vocabulary_conversation_turn(
+            conversation_id,
+            turn_type="user_reply",
+            text=text,
+            increment_user_turn=True,
+            complete=False,
+            used_vocabulary_ids=(),
+        )
+
+    async def record_vocabulary_conversation_feedback(
+        self,
+        conversation_id: str,
+        text: str,
+    ) -> VocabularyConversationSession:
+        """Store a short bot feedback message inside a conversation transcript."""
+        return await self._append_vocabulary_conversation_turn(
+            conversation_id,
+            turn_type="bot_feedback",
+            text=text,
+            increment_user_turn=False,
+            complete=False,
+            used_vocabulary_ids=(),
+        )
+
+    async def record_vocabulary_conversation_bot_reply(
+        self,
+        conversation_id: str,
+        text: str,
+        *,
+        used_vocabulary_ids: Sequence[str] = (),
+        complete: bool = False,
+    ) -> VocabularyConversationSession:
+        """Store the bot's main conversational reply and optionally complete the session."""
+        return await self._append_vocabulary_conversation_turn(
+            conversation_id,
+            turn_type="bot_closing" if complete else "bot_reply",
+            text=text,
+            increment_user_turn=False,
+            complete=complete,
+            used_vocabulary_ids=used_vocabulary_ids,
+        )
+
+    async def mark_vocabulary_conversation_timed_out(self, conversation_id: str) -> None:
+        """Mark one active conversation as timed out."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE fact_vocab_conversation_sessions
+                SET status = 'timed_out',
+                    completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
+                WHERE conversation_id = $1
+                  AND status = 'active'
+                """,
+                conversation_id,
+            )
+
+    async def increment_vocabulary_conversation_trainer_usage(
+        self,
+        vocabulary_ids: Sequence[str],
+    ) -> None:
+        """Increment the trainer usage counter for vocabulary items present in a sent bot message."""
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        unique_ids = list(dict.fromkeys(str(vocabulary_id) for vocabulary_id in vocabulary_ids))
+        if not unique_ids:
+            return
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE fact_vocabulary
+                SET number_of_usages_by_conversation_trainer =
+                        COALESCE(number_of_usages_by_conversation_trainer, 0) + 1
+                WHERE vocabulary_id::text = ANY($1::TEXT[])
+                """,
+                unique_ids,
+            )
+
+    async def _append_vocabulary_conversation_turn(
+        self,
+        conversation_id: str,
+        *,
+        turn_type: str,
+        text: str,
+        increment_user_turn: bool,
+        complete: bool,
+        used_vocabulary_ids: Sequence[str],
+    ) -> VocabularyConversationSession:
+        if not self._pool:
+            raise RuntimeError("Database not connected. Call connect() first.")
+
+        used_ids = [str(vocabulary_id) for vocabulary_id in used_vocabulary_ids]
+        conversation_turn_id = str(uuid.uuid4())
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    UPDATE fact_vocab_conversation_sessions
+                    SET user_turn_count = user_turn_count + CASE WHEN $2 THEN 1 ELSE 0 END,
+                        turn_count = turn_count + 1,
+                        status = CASE WHEN $3 THEN 'completed' ELSE status END,
+                        last_activity_at = CURRENT_TIMESTAMP,
+                        completed_at = CASE
+                            WHEN $3 THEN CURRENT_TIMESTAMP
+                            ELSE completed_at
+                        END
+                    WHERE conversation_id = $1
+                      AND status = 'active'
+                    RETURNING
+                        conversation_id,
+                        user_id,
+                        telegram_user_id,
+                        story_type,
+                        status,
+                        user_turn_count,
+                        max_user_turns,
+                        turn_count,
+                        selected_vocabulary_ids,
+                        last_activity_at,
+                        timeout_at,
+                        completed_at
+                    """,
+                    conversation_id,
+                    increment_user_turn,
+                    complete,
+                )
+                if row is None:
+                    raise ValueError(f"No active vocabulary conversation found: {conversation_id}")
+
+                await conn.execute(
+                    """
+                    INSERT INTO fact_vocab_conversation_turns (
+                        conversation_turn_id,
+                        conversation_id,
+                        turn_index,
+                        turn_type,
+                        text,
+                        used_vocabulary_ids
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    """,
+                    conversation_turn_id,
+                    conversation_id,
+                    row["turn_count"],
+                    turn_type,
+                    text,
+                    used_ids,
+                )
+
+        return VocabularyConversationSession.model_validate(
+            _normalize_conversation_session_row(row)
+        )
+
     async def store_dish(self, user_id: str, analysis: RecipeAnalysis | dict) -> str:
         """Persist a recipe or dish idea to fact_dishes for a user."""
         if not self._pool:
@@ -698,6 +1245,13 @@ class PostgresDatabase:
                             OR COALESCE(pending.awaiting_sentence, FALSE) = TRUE
                         )
                   )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM fact_vocab_conversation_sessions c
+                      WHERE c.user_id = v.user_id
+                        AND c.status = 'active'
+                        AND c.timeout_at > CURRENT_TIMESTAMP
+                  )
                 ORDER BY v.user_id, v.next_review_at ASC, v.created_at ASC
                 LIMIT $1
                 """,
@@ -749,6 +1303,13 @@ class PostgresDatabase:
                   )
                   AND u.telegram_user_id IS NOT NULL
                   AND COALESCE(u.has_vocab_bot_activated, FALSE) = TRUE
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM fact_vocab_conversation_sessions c
+                      WHERE c.user_id = v.user_id
+                        AND c.status = 'active'
+                        AND c.timeout_at > CURRENT_TIMESTAMP
+                  )
                 ORDER BY
                     v.user_id,
                     COALESCE(v.awaiting_sentence, FALSE) DESC,
@@ -809,6 +1370,13 @@ class PostgresDatabase:
                             pending.awaiting_review = TRUE
                             OR COALESCE(pending.awaiting_sentence, FALSE) = TRUE
                         )
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM fact_vocab_conversation_sessions c
+                      WHERE c.user_id = v.user_id
+                        AND c.status = 'active'
+                        AND c.timeout_at > CURRENT_TIMESTAMP
                   )
                 ORDER BY v.next_review_at ASC, v.created_at ASC
                 LIMIT 1

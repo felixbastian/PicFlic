@@ -167,6 +167,21 @@ def test_has_vocab_bot_activated_reads_flag():
     assert params == ("user-123",)
 
 
+def test_has_vocab_conversation_bot_activated_reads_flag():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+    db._pool.connection.fetchval_result = True
+
+    activated = asyncio.run(db.has_vocab_conversation_bot_activated("user-123"))
+
+    assert activated is True
+    calls = db._pool.connection.fetchval_calls
+    assert len(calls) == 1
+    query, params = calls[0]
+    assert "has_vocab_conversation_bot_activated" in query
+    assert params == ("user-123",)
+
+
 def test_get_recent_prompted_vocabulary_review_by_prompt_matches_prompt_text():
     db = PostgresDatabase()
     db._pool = _FakePool()
@@ -363,6 +378,180 @@ def test_store_vocabulary_inserts_fact_row():
     assert params[1] == "user-123"
     assert params[2] == "bonjour"
     assert params[3] == "hello; a common French greeting used when meeting someone."
+
+
+def test_expire_stale_vocabulary_conversations_returns_expired_count():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+    db._pool.connection.fetchval_result = 2
+
+    expired_count = asyncio.run(db.expire_stale_vocabulary_conversations())
+
+    assert expired_count == 2
+    query, params = db._pool.connection.fetchval_calls[0]
+    assert "fact_vocab_conversation_sessions" in query
+    assert "WHEN user_turn_count >= max_user_turns THEN 'completed'" in query
+    assert "ELSE 'timed_out'" in query
+    assert params == ()
+
+
+def test_list_users_ready_for_vocabulary_conversations_returns_activated_users():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+    user_id = uuid.uuid4()
+    db._pool.connection.fetch_result = [
+        {
+            "user_id": user_id,
+            "telegram_user_id": 42,
+        }
+    ]
+
+    rows = asyncio.run(db.list_users_ready_for_vocabulary_conversations())
+
+    assert len(rows) == 1
+    assert rows[0].user_id == str(user_id)
+    assert rows[0].telegram_user_id == 42
+    query, params = db._pool.connection.fetch_calls[0]
+    assert "has_vocab_conversation_bot_activated" in query
+    assert "fact_vocab_conversation_sessions" in query
+    assert params == (100,)
+
+
+def test_list_vocabulary_conversation_candidates_returns_ordered_candidates():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+    vocabulary_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    db._pool.connection.fetch_result = [
+        {
+            "vocabulary_id": vocabulary_id,
+            "user_id": user_id,
+            "french_word": "habitude",
+            "english_description": "habit",
+            "number_of_usages_by_conversation_trainer": 0,
+            "finished": False,
+        }
+    ]
+
+    rows = asyncio.run(db.list_vocabulary_conversation_candidates(str(user_id)))
+
+    assert len(rows) == 1
+    assert rows[0].vocabulary_id == str(vocabulary_id)
+    assert rows[0].number_of_usages_by_conversation_trainer == 0
+    query, params = db._pool.connection.fetch_calls[0]
+    assert "number_of_usages_by_conversation_trainer" in query
+    assert params == (str(user_id), 50)
+
+
+def test_create_vocabulary_conversation_session_inserts_session_and_opening_turn():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+
+    conversation_id = asyncio.run(
+        db.create_vocabulary_conversation_session(
+            "user-123",
+            42,
+            "ask_me_something",
+            ["vocab-1", "vocab-2"],
+            "Salut ! Comment ca va aujourd'hui ?",
+            opening_used_vocabulary_ids=["vocab-1"],
+        )
+    )
+
+    assert conversation_id
+    assert len(db._pool.connection.execute_calls) == 2
+    first_query, first_params = db._pool.connection.execute_calls[0]
+    second_query, second_params = db._pool.connection.execute_calls[1]
+    assert "INSERT INTO fact_vocab_conversation_sessions" in first_query
+    assert "23 hours" in first_query
+    assert first_params[1] == "user-123"
+    assert first_params[2] == 42
+    assert first_params[3] == "ask_me_something"
+    assert first_params[5] == ["vocab-1", "vocab-2"]
+    assert "INSERT INTO fact_vocab_conversation_turns" in second_query
+    assert second_params[1] == conversation_id
+    assert second_params[2] == "Salut ! Comment ca va aujourd'hui ?"
+    assert second_params[3] == ["vocab-1"]
+
+
+def test_get_active_vocabulary_conversation_normalizes_row():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+    conversation_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    db._pool.connection.fetchrow_results = [
+        {
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "telegram_user_id": 42,
+            "story_type": "ask_me_something",
+            "status": "active",
+            "user_turn_count": 1,
+            "max_user_turns": 5,
+            "turn_count": 3,
+            "selected_vocabulary_ids": ["vocab-1", "vocab-2"],
+            "last_activity_at": datetime(2026, 4, 10, 9, 0, 0),
+            "timeout_at": datetime(2026, 4, 11, 21, 0, 0),
+            "completed_at": None,
+        }
+    ]
+
+    row = asyncio.run(db.get_active_vocabulary_conversation(42))
+
+    assert row is not None
+    assert row.conversation_id == str(conversation_id)
+    assert row.user_id == str(user_id)
+    assert row.selected_vocabulary_ids == ["vocab-1", "vocab-2"]
+
+
+def test_record_vocabulary_conversation_user_reply_updates_session_and_inserts_turn():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+    conversation_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    db._pool.connection.fetchrow_results = [
+        {
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "telegram_user_id": 42,
+            "story_type": "ask_me_something",
+            "status": "active",
+            "user_turn_count": 1,
+            "max_user_turns": 5,
+            "turn_count": 2,
+            "selected_vocabulary_ids": ["vocab-1", "vocab-2"],
+            "last_activity_at": datetime(2026, 4, 10, 9, 5, 0),
+            "timeout_at": datetime(2026, 4, 11, 21, 5, 0),
+            "completed_at": None,
+        }
+    ]
+
+    session = asyncio.run(
+        db.record_vocabulary_conversation_user_reply(str(conversation_id), "J'aime parler en francais.")
+    )
+
+    assert session.user_turn_count == 1
+    update_query, update_params = db._pool.connection.fetchrow_calls[0]
+    insert_query, insert_params = db._pool.connection.execute_calls[0]
+    assert "UPDATE fact_vocab_conversation_sessions" in update_query
+    assert "CURRENT_TIMESTAMP + INTERVAL '36 hours'" not in update_query
+    assert update_params == (str(conversation_id), True, False)
+    assert "INSERT INTO fact_vocab_conversation_turns" in insert_query
+    assert insert_params[1] == str(conversation_id)
+    assert insert_params[2] == 2
+    assert insert_params[3] == "user_reply"
+    assert insert_params[4] == "J'aime parler en francais."
+
+
+def test_increment_vocabulary_conversation_trainer_usage_updates_counter():
+    db = PostgresDatabase()
+    db._pool = _FakePool()
+
+    asyncio.run(db.increment_vocabulary_conversation_trainer_usage(["vocab-1", "vocab-1", "vocab-2"]))
+
+    query, params = db._pool.connection.execute_calls[0]
+    assert "number_of_usages_by_conversation_trainer" in query
+    assert params == (["vocab-1", "vocab-2"],)
 
 
 def test_store_dish_inserts_fact_row():

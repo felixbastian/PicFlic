@@ -187,10 +187,12 @@ def test_process_text_uses_message_history_to_change_previous_expense_amount_end
     assert updated_record.analysis.expense_total_amount_in_euros == pytest.approx(10.0, abs=0.5)
 
 def test_expense_text_query_uses_expense_workflow_end_to_end(tmp_path):
-   
+    _require_openai_api_key()
     agent = PictoAgent(SqliteDatabase(tmp_path / "workflow.db"))
 
-    result = agent.process_text("What are the total expenses in January on groceries (Lebensmittel)?")
+    result = _run_or_skip_for_openai_connectivity(
+        lambda: agent.process_text("What are the total expenses in January on groceries (Lebensmittel)?")
+    )
 
     assert result["workflow_type"] == "expense_query"
     assert result["explanation"].strip()

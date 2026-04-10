@@ -280,7 +280,7 @@ def _refine_vocabulary_description(
     )
 
 
-def _call_text_with_schema(prompt: str, user_text: str, response_model: type, response_name: str):
+def call_text_with_schema(prompt: str, user_text: str, response_model: type, response_name: str):
     config = load_config()
     if not config.openai_api_key:
         raise ValueError(
@@ -328,3 +328,7 @@ def _call_text_with_schema(prompt: str, user_text: str, response_model: type, re
         },
     )
     return response_model.model_validate_json(response.output_text)
+
+
+def _call_text_with_schema(prompt: str, user_text: str, response_model: type, response_name: str):
+    return call_text_with_schema(prompt, user_text, response_model, response_name)

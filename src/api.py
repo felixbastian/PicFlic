@@ -17,7 +17,12 @@ from .models import ImageRecord, NutritionAnalysis
 from .db import PostgresDatabase
 from .logging_config import setup_logging
 from .logging_context import bind_log_context, generate_process_id, reset_log_context
-from .vocab_bot import create_vocabulary_telegram_application, dispatch_due_vocabulary_reviews
+from .vocab_conversation_bot import create_vocabulary_conversation_telegram_application
+from .vocab_bot import (
+    VocabularyConversationTrainer,
+    create_vocabulary_telegram_application,
+    dispatch_due_vocabulary_reviews,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +55,9 @@ def get_agent() -> MainAgent:
 # Initialize bot application on startup
 _main_bot_application = None
 _vocab_bot_application = None
+_vocab_conversation_bot_application = None
 _db = None
+_vocab_conversation_trainer = None
 
 
 def _describe_update(update: Update) -> str:
@@ -89,11 +96,13 @@ async def lifespan(app: FastAPI):
     # Initialize logging
     setup_logging()
     
-    global _main_bot_application, _vocab_bot_application, _db
+    global _main_bot_application, _vocab_bot_application, _vocab_conversation_bot_application, _db
+    global _vocab_conversation_trainer
     # Startup
     config = load_config()
     main_agent = create_default_agent()
     vocabulary_agent = create_default_vocabulary_agent()
+    _vocab_conversation_trainer = VocabularyConversationTrainer()
     
     if config.postgres_enabled:
         _db = PostgresDatabase.from_config(config)
@@ -122,6 +131,20 @@ async def lifespan(app: FastAPI):
         logger.info("Vocabulary Telegram application initialized successfully")
     else:
         logger.warning("No vocabulary telegram token found, vocabulary bot will not be initialized")
+    if config.vocab_conversation_telegram_token:
+        logger.info("Creating vocabulary conversation Telegram application")
+        _vocab_conversation_bot_application = create_vocabulary_conversation_telegram_application(
+            _vocab_conversation_trainer,
+            config.vocab_conversation_telegram_token,
+            _db,
+        )
+        logger.info("Initializing vocabulary conversation Telegram application")
+        await _vocab_conversation_bot_application.initialize()
+        logger.info("Vocabulary conversation Telegram application initialized successfully")
+    else:
+        logger.warning(
+            "No vocabulary conversation telegram token found, vocabulary conversation bot will not be initialized"
+        )
     yield
     # Shutdown
     if _main_bot_application is not None:
@@ -132,6 +155,10 @@ async def lifespan(app: FastAPI):
         logger.info("Shutting down vocabulary Telegram application")
         await _vocab_bot_application.stop()
         logger.info("Vocabulary Telegram application shut down")
+    if _vocab_conversation_bot_application is not None:
+        logger.info("Shutting down vocabulary conversation Telegram application")
+        await _vocab_conversation_bot_application.stop()
+        logger.info("Vocabulary conversation Telegram application shut down")
     
     if _db is not None:
         await _db.disconnect()
@@ -160,6 +187,18 @@ async def vocabulary_telegram_webhook(payload: dict) -> dict[str, str]:
         _vocab_bot_application,
         process_prefix="vocabulary-telegram",
         action="vocabulary_telegram_webhook",
+        preload_main_photo_user=False,
+    )
+
+
+@app.post("/webhook/telegram/vocabulary-conversation")
+async def vocabulary_conversation_telegram_webhook(payload: dict) -> dict[str, str]:
+    """Receive Telegram updates for the dedicated vocabulary conversation bot."""
+    return await _process_telegram_webhook(
+        payload,
+        _vocab_conversation_bot_application,
+        process_prefix="vocabulary-conversation-telegram",
+        action="vocabulary_conversation_telegram_webhook",
         preload_main_photo_user=False,
     )
 
@@ -252,6 +291,39 @@ async def run_vocabulary_reviews(
         reset_log_context(context_token)
 
 
+@app.post("/jobs/vocabulary-conversations/run")
+async def run_vocabulary_conversations(
+    x_job_secret: str | None = Header(default=None, alias="X-Job-Secret"),
+) -> dict[str, int | str]:
+    """Start new daily vocabulary conversations for eligible users."""
+    config = load_config()
+    if not config.review_job_secret or x_job_secret != config.review_job_secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if _vocab_conversation_bot_application is None or _db is None or _vocab_conversation_trainer is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Vocabulary conversation bot, trainer, or database not initialized",
+        )
+
+    context_token = bind_log_context(
+        process_id=generate_process_id("vocabulary-conversation-job"),
+        action="vocabulary_conversation_job",
+        workflow="vocabulary_conversation",
+    )
+    try:
+        started_count = await _vocab_conversation_trainer.dispatch_daily_conversations(
+            _vocab_conversation_bot_application,
+            _db,
+        )
+        logger.info(
+            "Started daily vocabulary conversations",
+            extra={"event": "vocabulary_conversation_job_completed", "started_count": started_count},
+        )
+        return {"status": "ok", "started_count": started_count}
+    finally:
+        reset_log_context(context_token)
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     config = load_config()
@@ -260,4 +332,5 @@ def health() -> dict[str, str]:
         "database_path": str(config.database_path),
         "postgres_enabled": str(config.postgres_enabled).lower(),
         "vocab_bot_enabled": str(bool(config.vocab_telegram_token)).lower(),
+        "vocab_conversation_bot_enabled": str(bool(config.vocab_conversation_telegram_token)).lower(),
     }

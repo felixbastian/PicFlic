@@ -40,6 +40,11 @@ if [[ -n "${VOCAB_TELEGRAM_BOT_TOKEN:-}" ]]; then
   VOCAB_BOT_ENABLED="1"
 fi
 
+VOCAB_CONVERSATION_BOT_ENABLED="0"
+if [[ -n "${VOCAB_CONVERSATION_TELEGRAM_BOT_TOKEN:-}" ]]; then
+  VOCAB_CONVERSATION_BOT_ENABLED="1"
+fi
+
 PROXY_PID=""
 APP_PID=""
 TUNNEL_PID=""
@@ -340,6 +345,9 @@ if [[ "$SKIP_WEBHOOK_SETUP" != "1" ]]; then
   if [[ "$VOCAB_BOT_ENABLED" == "1" ]]; then
     echo "Setting vocabulary Telegram webhook to $PUBLIC_URL/webhook/telegram/vocabulary"
   fi
+  if [[ "$VOCAB_CONVERSATION_BOT_ENABLED" == "1" ]]; then
+    echo "Setting vocabulary conversation Telegram webhook to $PUBLIC_URL/webhook/telegram/vocabulary-conversation"
+  fi
   if ! WEBHOOK_RESPONSE="$(ENV_FILE="$ENV_FILE" ./scripts/set_test_bot_webhook.sh "$PUBLIC_URL")"; then
     FAILED="1"
     echo "Telegram did not accept the webhook."
@@ -362,6 +370,19 @@ if [[ "$SKIP_WEBHOOK_SETUP" != "1" ]]; then
   else
     echo "Vocabulary bot webhook setup skipped because VOCAB_TELEGRAM_BOT_TOKEN is not configured in $ENV_FILE"
   fi
+
+  if [[ "$VOCAB_CONVERSATION_BOT_ENABLED" == "1" ]]; then
+    if ! wait_for_webhook_info \
+      "$VOCAB_CONVERSATION_TELEGRAM_BOT_TOKEN" \
+      "$PUBLIC_URL/webhook/telegram/vocabulary-conversation" \
+      "Vocab conversation bot"; then
+      FAILED="1"
+      echo "Vocabulary conversation bot webhook was not confirmed by Telegram."
+      exit 1
+    fi
+  else
+    echo "Vocabulary conversation bot webhook setup skipped because VOCAB_CONVERSATION_TELEGRAM_BOT_TOKEN is not configured in $ENV_FILE"
+  fi
 else
   echo "Skipping Telegram webhook setup because SKIP_WEBHOOK_SETUP=1"
 fi
@@ -374,6 +395,9 @@ if [[ "$SKIP_WEBHOOK_SETUP" != "1" ]]; then
   echo "Main webhook URL: $PUBLIC_URL/webhook/telegram"
   if [[ "$VOCAB_BOT_ENABLED" == "1" ]]; then
     echo "Vocab webhook URL: $PUBLIC_URL/webhook/telegram/vocabulary"
+  fi
+  if [[ "$VOCAB_CONVERSATION_BOT_ENABLED" == "1" ]]; then
+    echo "Vocab conversation webhook URL: $PUBLIC_URL/webhook/telegram/vocabulary-conversation"
   fi
 fi
 echo
