@@ -12,3 +12,4 @@
 - If the request of the user requires substantial refactoring of the code, then first suggest the user an infrastructure change request
 - use implementation and implementation_details to document potential changes in the architecture and implementation logic
 - Do not make any changes in the migration .sql files of the migrations folder. If you want to change something create a 99_suggested_schema.sql
+- If you implement changes in the CI/CD pipeline, dont forget to also change.github/deploy-service.yaml
