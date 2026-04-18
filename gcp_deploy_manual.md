@@ -65,6 +65,14 @@ gcloud iam service-accounts add-iam-policy-binding \
 curl -X POST https://api.telegram.org/bot8600025848:AAHbOpEWZGLY3Gg3WieG28nz8K12OHV6IHU/setWebhook \
   -d url=https://picflic-cloud-run-642164961505.europe-west1.run.app/webhook/telegram
 
+curl -X POST https://api.telegram.org/bot${VOCAB_TELEGRAM_BOT_TOKEN}/setWebhook \
+  -d url=https://picflic-cloud-run-642164961505.europe-west1.run.app/webhook/telegram/vocabulary
+
+curl -X POST https://api.telegram.org/bot${VOCAB_CONVERSATION_TELEGRAM_BOT_TOKEN}/setWebhook \
+  -d url=https://picflic-cloud-run-642164961505.europe-west1.run.app/webhook/telegram/vocabulary-conversation
+
+curl https://api.telegram.org/bot${VOCAB_CONVERSATION_TELEGRAM_BOT_TOKEN}/getWebhookInfo
+
 
 ### Cloud Scheduler for vocab
 

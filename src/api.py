@@ -26,6 +26,10 @@ from .vocab_bot import (
 
 logger = logging.getLogger(__name__)
 
+_MAIN_BOT_WEBHOOK_PATH = "/webhook/telegram"
+_VOCAB_BOT_WEBHOOK_PATH = "/webhook/telegram/vocabulary"
+_VOCAB_CONVERSATION_BOT_WEBHOOK_PATH = "/webhook/telegram/vocabulary-conversation"
+
 
 class AnalyzeRequest(BaseModel):
     image_path: str = Field(description="Path to the image file to analyze.")
@@ -116,7 +120,14 @@ async def lifespan(app: FastAPI):
         _main_bot_application = create_telegram_application(main_agent, config.telegram_token, _db)
         logger.info("Initializing Telegram application")
         await _main_bot_application.initialize()
-        logger.info("Telegram application initialized successfully")
+        logger.info(
+            "Telegram application initialized successfully",
+            extra={
+                "event": "main_telegram_application_initialized",
+                "bot_username": "PictoAgent",
+                "expected_webhook_path": _MAIN_BOT_WEBHOOK_PATH,
+            },
+        )
     else:
         logger.warning("No telegram token found, bot will not be initialized")
     if config.vocab_telegram_token:
@@ -128,7 +139,14 @@ async def lifespan(app: FastAPI):
         )
         logger.info("Initializing vocabulary Telegram application")
         await _vocab_bot_application.initialize()
-        logger.info("Vocabulary Telegram application initialized successfully")
+        logger.info(
+            "Vocabulary Telegram application initialized successfully",
+            extra={
+                "event": "vocabulary_telegram_application_initialized",
+                "bot_username": config.vocab_bot_username,
+                "expected_webhook_path": _VOCAB_BOT_WEBHOOK_PATH,
+            },
+        )
     else:
         logger.warning("No vocabulary telegram token found, vocabulary bot will not be initialized")
     if config.vocab_conversation_telegram_token:
@@ -140,7 +158,14 @@ async def lifespan(app: FastAPI):
         )
         logger.info("Initializing vocabulary conversation Telegram application")
         await _vocab_conversation_bot_application.initialize()
-        logger.info("Vocabulary conversation Telegram application initialized successfully")
+        logger.info(
+            "Vocabulary conversation Telegram application initialized successfully",
+            extra={
+                "event": "vocabulary_conversation_telegram_application_initialized",
+                "bot_username": config.vocab_conversation_bot_username,
+                "expected_webhook_path": _VOCAB_CONVERSATION_BOT_WEBHOOK_PATH,
+            },
+        )
     else:
         logger.warning(
             "No vocabulary conversation telegram token found, vocabulary conversation bot will not be initialized"

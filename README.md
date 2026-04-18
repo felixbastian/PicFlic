@@ -95,6 +95,16 @@ For production deployment on Google Cloud Run, use webhook-based updates instead
    curl https://api.telegram.org/bot{TOKEN}/getWebhookInfo
    ```
 
+   If you also run the separate vocabulary bots, set their dedicated webhook routes too:
+
+   ```bash
+   curl -X POST https://api.telegram.org/bot{VOCAB_TOKEN}/setWebhook \
+     -d url=https://{CLOUD_RUN_URL}/webhook/telegram/vocabulary
+
+   curl -X POST https://api.telegram.org/bot{VOCAB_CONVERSATION_TOKEN}/setWebhook \
+     -d url=https://{CLOUD_RUN_URL}/webhook/telegram/vocabulary-conversation
+   ```
+
 Now Telegram will send updates to your Cloud Run service via POST requests to the webhook endpoint.
 
 ## Cloud SQL on Cloud Run
