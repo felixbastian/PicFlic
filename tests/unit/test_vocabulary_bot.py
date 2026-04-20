@@ -48,6 +48,7 @@ class _FakePostgresDatabase:
         self.user_calls: list[dict] = []
         self.due_reviews: list[DueVocabularyReview] = []
         self.stale_reviews: list[DueVocabularyReview] = []
+        self.expire_stale_conversation_calls = 0
         self.mark_prompted_calls: list[str] = []
         self.prompt_reference: ReferencedVocabularyReview | None = None
         self.word_reference: ReferencedVocabularyReview | None = None
@@ -64,6 +65,10 @@ class _FakePostgresDatabase:
 
     async def list_stale_vocabulary_review_reminders(self, limit: int = 100, resend_after=None) -> list[DueVocabularyReview]:
         return self.stale_reviews[:limit]
+
+    async def expire_stale_vocabulary_conversations(self) -> int:
+        self.expire_stale_conversation_calls += 1
+        return 0
 
     async def mark_vocabulary_review_prompted(self, vocabulary_id: str) -> None:
         self.mark_prompted_calls.append(vocabulary_id)
@@ -347,6 +352,7 @@ def test_dispatch_due_vocabulary_reviews_sends_one_prompt_per_due_review():
             ),
         }
     ]
+    assert postgres_db.expire_stale_conversation_calls == 1
     assert postgres_db.mark_prompted_calls == ["vocab-1"]
 
 

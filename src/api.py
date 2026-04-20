@@ -64,6 +64,18 @@ _db = None
 _vocab_conversation_trainer = None
 
 
+async def _shutdown_telegram_application(application, shutdown_label: str) -> None:
+    """Tear down a Telegram application regardless of whether it was fully started."""
+    if application is None:
+        return
+
+    logger.info("Shutting down %s", shutdown_label)
+    if getattr(application, "running", False):
+        await application.stop()
+    await application.shutdown()
+    logger.info("%s shut down", shutdown_label)
+
+
 def _describe_update(update: Update) -> str:
     if update.message is None:
         return "non_message_update"
@@ -172,18 +184,12 @@ async def lifespan(app: FastAPI):
         )
     yield
     # Shutdown
-    if _main_bot_application is not None:
-        logger.info("Shutting down Telegram application")
-        await _main_bot_application.stop()
-        logger.info("Telegram application shut down")
-    if _vocab_bot_application is not None:
-        logger.info("Shutting down vocabulary Telegram application")
-        await _vocab_bot_application.stop()
-        logger.info("Vocabulary Telegram application shut down")
-    if _vocab_conversation_bot_application is not None:
-        logger.info("Shutting down vocabulary conversation Telegram application")
-        await _vocab_conversation_bot_application.stop()
-        logger.info("Vocabulary conversation Telegram application shut down")
+    await _shutdown_telegram_application(_main_bot_application, "Telegram application")
+    await _shutdown_telegram_application(_vocab_bot_application, "vocabulary Telegram application")
+    await _shutdown_telegram_application(
+        _vocab_conversation_bot_application,
+        "vocabulary conversation Telegram application",
+    )
     
     if _db is not None:
         await _db.disconnect()
