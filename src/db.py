@@ -687,7 +687,7 @@ class PostgresDatabase:
 
         async with self._pool.acquire() as conn:
             expired_count = await conn.fetchval(
-                """
+                f"""
                 WITH expired AS (
                     UPDATE fact_vocab_conversation_sessions
                     SET status = CASE
