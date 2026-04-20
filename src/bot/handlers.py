@@ -18,6 +18,7 @@ from ..config import load_config
 from ..db import PostgresDatabase
 from ..logging_context import bind_log_context, generate_process_id, get_log_context, reset_log_context
 from ..models import RecipeAnalysis
+from ..vocabulary_review import generate_stored_vocabulary_examples
 from .constants import QUERY_ALLOWED_TABLES, RECIPE_ANALYSIS_FIELDS, VOCAB_BOT_LINK_FALLBACK, WELCOME_MESSAGE
 from .corrections import apply_expense_correction_workflow, apply_nutrition_correction_workflow
 from .deletions import apply_delete_latest_entry_workflow
@@ -336,10 +337,15 @@ async def _handle_vocabulary_workflow(
     if result.get("store_vocabulary") and postgres_db is not None:
         user_id = await resolve_user_id(update, context, postgres_db)
         if await postgres_db.has_vocab_bot_activated(user_id):
+            example_sentences = generate_stored_vocabulary_examples(
+                result["french_word"],
+                result["english_description"],
+            )
             await postgres_db.store_vocabulary(
                 user_id,
                 result["french_word"],
                 result["english_description"],
+                example_sentences,
             )
             response = format_vocabulary_response(
                 response,

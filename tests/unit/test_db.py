@@ -366,6 +366,11 @@ def test_store_vocabulary_inserts_fact_row():
             "user-123",
             "bonjour",
             "hello; a common French greeting used when meeting someone.",
+            [
+                "Bonjour, comment allez-vous ?",
+                "Je dis bonjour a mes voisins chaque matin.",
+                "Elle a oublie de dire bonjour en entrant.",
+            ],
         )
     )
 
@@ -378,6 +383,11 @@ def test_store_vocabulary_inserts_fact_row():
     assert params[1] == "user-123"
     assert params[2] == "bonjour"
     assert params[3] == "hello; a common French greeting used when meeting someone."
+    assert params[4] == [
+        "Bonjour, comment allez-vous ?",
+        "Je dis bonjour a mes voisins chaque matin.",
+        "Elle a oublie de dire bonjour en entrant.",
+    ]
 
 
 def test_expire_stale_vocabulary_conversations_returns_expired_count():

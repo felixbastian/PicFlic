@@ -170,12 +170,19 @@ class _FakePostgresDatabase:
         self.dish_calls.append({"user_id": user_id, "analysis": analysis})
         return "dish-123"
 
-    async def store_vocabulary(self, user_id: str, french_word: str, english_description: str) -> str:
+    async def store_vocabulary(
+        self,
+        user_id: str,
+        french_word: str,
+        english_description: str,
+        example_sentences: list[str] | None = None,
+    ) -> str:
         self.vocabulary_calls.append(
             {
                 "user_id": user_id,
                 "french_word": french_word,
                 "english_description": english_description,
+                "example_sentences": list(example_sentences or []),
             }
         )
         return "vocabulary-123"
@@ -1125,7 +1132,7 @@ def test_handle_message_uses_friendly_sequence_on_second_consecutive_echo(monkey
     assert message.photos == ["https://example.com/friendly-reset.png"]
 
 
-def test_handle_message_stores_new_vocabulary_entry():
+def test_handle_message_stores_new_vocabulary_entry(monkeypatch):
     message = _FakeMessage()
     message.photo = []
     message.text = "bonjour"
@@ -1150,6 +1157,14 @@ def test_handle_message_stores_new_vocabulary_entry():
     )
     context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
     postgres_db = _FakePostgresDatabase()
+    monkeypatch.setattr(
+        "src.bot.handlers.generate_stored_vocabulary_examples",
+        lambda french_word, english_description: [
+            "Bonjour, comment allez-vous ?",
+            "Je passe te dire bonjour avant de partir.",
+            "Elle sourit toujours quand on lui dit bonjour.",
+        ],
+    )
 
     asyncio.run(handle_message(update, context, agent, postgres_db))
 
@@ -1159,6 +1174,11 @@ def test_handle_message_stores_new_vocabulary_entry():
             "user_id": "user-123",
             "french_word": "bonjour",
             "english_description": "hello; a common French greeting used when meeting someone.",
+            "example_sentences": [
+                "Bonjour, comment allez-vous ?",
+                "Je passe te dire bonjour avant de partir.",
+                "Elle sourit toujours quand on lui dit bonjour.",
+            ],
         }
     ]
     assert message.replies == [

@@ -8,13 +8,15 @@ import unicodedata
 from datetime import timedelta
 from difflib import SequenceMatcher
 import logging
+from typing import Sequence
 
 from .models import (
     DueVocabularyReview,
     VocabularySentenceExamples,
+    VocabularyStoredExamples,
+    VocabularySentenceEvaluation,
     VocabularyReviewResult,
     VocabularyReviewStage,
-    VocabularySentenceEvaluation,
     VocabularySynonymHint,
 )
 from .query_utils import _call_text_with_schema
@@ -49,6 +51,39 @@ _APOSTROPHE_VARIANTS = {
     "`": "'",
 }
 logger = logging.getLogger(__name__)
+
+
+def _clean_example_sentences(sentences: Sequence[str], *, limit: int | None = None) -> list[str]:
+    cleaned_sentences = [sentence.strip() for sentence in sentences if sentence.strip()]
+    if limit is None:
+        return cleaned_sentences
+    return cleaned_sentences[:limit]
+
+
+def format_vocabulary_examples_block(example_sentences: Sequence[str]) -> str:
+    """Format a short numbered examples block for storage or display."""
+    cleaned_examples = _clean_example_sentences(example_sentences)
+    if not cleaned_examples:
+        return ""
+
+    example_lines = [f"{index}. {sentence}" for index, sentence in enumerate(cleaned_examples, start=1)]
+    return "Examples:\n" + "\n".join(example_lines)
+
+
+def append_vocabulary_examples_to_description(
+    english_description: str,
+    example_sentences: Sequence[str],
+) -> str:
+    """Append stored examples to an English description when a combined text field is needed."""
+    cleaned_description = english_description.strip()
+    formatted_examples = format_vocabulary_examples_block(example_sentences)
+    if not formatted_examples:
+        return cleaned_description
+    if "\nExamples:\n" in cleaned_description or cleaned_description.startswith("Examples:\n"):
+        return cleaned_description
+    if not cleaned_description:
+        return formatted_examples
+    return f"{cleaned_description}\n{formatted_examples}"
 
 
 def normalize_review_text(value: str) -> str:
@@ -223,7 +258,7 @@ def build_sentence_failure_examples_response(
 ) -> str:
     """Build the response after the second failed attempt with example sentences."""
     base_response = build_sentence_failure_response(review, feedback)
-    cleaned_examples = [sentence.strip() for sentence in example_sentences if sentence.strip()]
+    cleaned_examples = _clean_example_sentences(example_sentences)
     if not cleaned_examples:
         return base_response
 
@@ -331,11 +366,20 @@ def evaluate_vocabulary_sentence(
     )
 
 
-def generate_vocabulary_sentence_examples(review: DueVocabularyReview) -> list[str]:
-    """Generate example French sentences showing correct usage of the target vocabulary."""
+def _generate_vocabulary_examples(
+    *,
+    french_word: str,
+    english_description: str,
+    example_count: int,
+    response_model: type,
+    response_name: str,
+    failure_event: str,
+    failure_extra: dict[str, object] | None = None,
+) -> list[str]:
     prompt = (
         "You are helping a French vocabulary trainer. "
-        "Generate exactly 5 short, natural French example sentences that show correct usage of the target vocabulary. "
+        f"Generate exactly {example_count} short, natural French example sentences that show correct usage of the "
+        "target vocabulary. "
         "Use varied contexts so the learner can see how the word or expression works in practice. "
         "When the target is a verb or expression, use a grammatically natural inflected form when appropriate instead "
         "of forcing the raw dictionary form. "
@@ -343,21 +387,52 @@ def generate_vocabulary_sentence_examples(review: DueVocabularyReview) -> list[s
         "Return only the structured result."
     )
     user_text = (
-        f"Target French word or expression: {review.french_word}\n"
-        f"English meaning: {review.english_description}"
+        f"Target French word or expression: {french_word}\n"
+        f"English meaning: {english_description}"
     )
     try:
         result = _call_text_with_schema(
             prompt,
             user_text,
-            VocabularySentenceExamples,
-            "vocabulary_sentence_examples",
+            response_model,
+            response_name,
         )
     except Exception:
+        extra = {"event": failure_event, "french_word": french_word}
+        if failure_extra:
+            extra.update(failure_extra)
         logger.exception(
             "Failed to generate vocabulary sentence examples",
-            extra={"event": "vocabulary_sentence_examples_failed", "vocabulary_id": review.vocabulary_id},
+            extra=extra,
         )
         return []
 
-    return result.sentences
+    return _clean_example_sentences(result.sentences, limit=example_count)
+
+
+def generate_vocabulary_sentence_examples(review: DueVocabularyReview) -> list[str]:
+    """Generate example French sentences showing correct usage of the target vocabulary."""
+    return _generate_vocabulary_examples(
+        french_word=review.french_word,
+        english_description=review.english_description,
+        example_count=5,
+        response_model=VocabularySentenceExamples,
+        response_name="vocabulary_sentence_examples",
+        failure_event="vocabulary_sentence_examples_failed",
+        failure_extra={"vocabulary_id": review.vocabulary_id},
+    )
+
+
+def generate_stored_vocabulary_examples(
+    french_word: str,
+    english_description: str,
+) -> list[str]:
+    """Generate 3 stored example sentences for a new vocabulary card."""
+    return _generate_vocabulary_examples(
+        french_word=french_word,
+        english_description=english_description,
+        example_count=3,
+        response_model=VocabularyStoredExamples,
+        response_name="stored_vocabulary_sentence_examples",
+        failure_event="stored_vocabulary_sentence_examples_failed",
+    )

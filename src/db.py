@@ -633,12 +633,19 @@ class PostgresDatabase:
                 logger.error("Failed to delete expense %s for user %s: %s", expense_id, user_id, e)
                 raise
 
-    async def store_vocabulary(self, user_id: str, french_word: str, english_description: str) -> str:
+    async def store_vocabulary(
+        self,
+        user_id: str,
+        french_word: str,
+        english_description: str,
+        example_sentences: Sequence[str] = (),
+    ) -> str:
         """Persist a vocabulary entry to fact_vocabulary for a user."""
         if not self._pool:
             raise RuntimeError("Database not connected. Call connect() first.")
 
         vocabulary_id = str(uuid.uuid4())
+        cleaned_examples = [str(sentence).strip() for sentence in example_sentences if str(sentence).strip()][:3]
         async with self._pool.acquire() as conn:
             try:
                 await conn.execute(
@@ -647,14 +654,16 @@ class PostgresDatabase:
                         vocabulary_id,
                         user_id,
                         french_word,
-                        english_description
+                        english_description,
+                        example_sentences
                     )
-                    VALUES ($1, $2, $3, $4)
+                    VALUES ($1, $2, $3, $4, $5)
                     """,
                     vocabulary_id,
                     user_id,
                     french_word,
                     english_description,
+                    cleaned_examples,
                 )
                 logger.info(
                     "Stored fact_vocabulary row %s for user %s",
