@@ -28,3 +28,4 @@ psql -h 127.0.0.1 -U app_user -d app_db -f src/db/migrations/011_edit_schema.sql
 psql -h 127.0.0.1 -U app_user -d app_db -f src/db/migrations/012_edit_schema.sql
 psql -h 127.0.0.1 -U app_user -d app_db -f src/db/migrations/013_edit_schema.sql
 psql -h 127.0.0.1 -U app_user -d app_db -f src/db/migrations/014_edit_schema.sql
+psql -h 127.0.0.1 -U app_user -d app_db -f src/db/migrations/015_edit_schema.sql

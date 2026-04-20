@@ -1,8 +1,10 @@
-from src.models import DueVocabularyReview
+from src.models import DueVocabularyReview, VocabularyStoredExamples
 from src.vocabulary_review import (
+    append_vocabulary_examples_to_description,
     build_sentence_failure_examples_response,
     build_synonym_second_chance_response,
     build_review_prompt,
+    generate_stored_vocabulary_examples,
     is_review_answer_correct,
     normalize_review_text,
     should_prompt_for_sentence_practice,
@@ -77,6 +79,47 @@ def test_build_sentence_failure_examples_response_includes_examples():
         "3. Elle a murmure bonjour.\n"
         "4. Ils passent dire bonjour.\n"
         "5. Un bonjour chaleureux suffit parfois."
+    )
+
+
+def test_generate_stored_vocabulary_examples_returns_three_sentences(monkeypatch):
+    def _fake_call_text_with_schema(prompt, user_text, response_model, response_name):
+        assert response_model is VocabularyStoredExamples
+        assert response_name == "stored_vocabulary_sentence_examples"
+        assert "Generate exactly 3 short, natural French example sentences" in prompt
+        return VocabularyStoredExamples(
+            sentences=[
+                "Bonjour, comment allez-vous ?",
+                "Je passe dire bonjour avant le travail.",
+                "Elle aime dire bonjour avec un grand sourire.",
+            ]
+        )
+
+    monkeypatch.setattr("src.vocabulary_review._call_text_with_schema", _fake_call_text_with_schema)
+
+    assert generate_stored_vocabulary_examples("bonjour", "hello") == [
+        "Bonjour, comment allez-vous ?",
+        "Je passe dire bonjour avant le travail.",
+        "Elle aime dire bonjour avec un grand sourire.",
+    ]
+
+
+def test_append_vocabulary_examples_to_description_adds_examples_block():
+    merged = append_vocabulary_examples_to_description(
+        "hello; a common greeting in French.",
+        [
+            "Bonjour, comment allez-vous ?",
+            "Je passe dire bonjour avant le travail.",
+            "Elle aime dire bonjour avec un grand sourire.",
+        ],
+    )
+
+    assert merged == (
+        "hello; a common greeting in French.\n"
+        "Examples:\n"
+        "1. Bonjour, comment allez-vous ?\n"
+        "2. Je passe dire bonjour avant le travail.\n"
+        "3. Elle aime dire bonjour avec un grand sourire."
     )
 
 

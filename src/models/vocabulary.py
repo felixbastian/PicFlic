@@ -195,6 +195,14 @@ class VocabularySentenceExamples(BaseModel):
     sentences: list[str] = Field(min_length=5, max_length=5)
 
 
+class VocabularyStoredExamples(BaseModel):
+    """Three stored example sentences attached to a vocabulary card."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sentences: list[str] = Field(min_length=3, max_length=3)
+
+
 class VocabularyDescriptionRefinement(BaseModel):
     """Refined vocabulary phrasing when the direct gloss is too close to the French word."""
 
