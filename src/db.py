@@ -58,6 +58,7 @@ _REVIEW_STAGE_NEXT: dict[VocabularyReviewStage, VocabularyReviewStage | None] = 
     "month": None,
 }
 _VOCAB_CONVERSATION_TIMEOUT_SQL = "INTERVAL '23 hours'"
+_VOCAB_CONVERSATION_NO_REPLY_TIMEOUT_SQL = "INTERVAL '1 hour'"
 
 
 def _normalize_due_vocabulary_review_row(row: Any) -> dict[str, Any]:
@@ -686,7 +687,13 @@ class PostgresDatabase:
                         END,
                         completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
                     WHERE status = 'active'
-                      AND timeout_at <= CURRENT_TIMESTAMP
+                      AND (
+                          timeout_at <= CURRENT_TIMESTAMP
+                          OR (
+                              user_turn_count = 0
+                              AND last_activity_at <= CURRENT_TIMESTAMP - {_VOCAB_CONVERSATION_NO_REPLY_TIMEOUT_SQL}
+                          )
+                      )
                     RETURNING 1
                 )
                 SELECT COUNT(*)

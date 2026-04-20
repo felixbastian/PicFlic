@@ -392,6 +392,8 @@ def test_expire_stale_vocabulary_conversations_returns_expired_count():
     assert "fact_vocab_conversation_sessions" in query
     assert "WHEN user_turn_count >= max_user_turns THEN 'completed'" in query
     assert "ELSE 'timed_out'" in query
+    assert "user_turn_count = 0" in query
+    assert "last_activity_at <= CURRENT_TIMESTAMP - INTERVAL '1 hour'" in query
     assert params == ()
 
 

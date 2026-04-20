@@ -20,6 +20,7 @@ async def dispatch_due_vocabulary_reviews(
     limit: int = 100,
 ) -> int:
     """Send newly due vocabulary review prompts without resending already-pending ones."""
+    await postgres_db.expire_stale_vocabulary_conversations()
     sent_count = 0
     due_reviews = await postgres_db.list_due_vocabulary_reviews(limit=limit)
     for review in due_reviews:
