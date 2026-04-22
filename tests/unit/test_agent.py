@@ -71,6 +71,14 @@ def _mock_nutrition_text_analysis(text: str, metadata: dict | None = None) -> Nu
     )
 
 
+def _mock_expense_text_analysis(text: str, metadata: dict | None = None) -> ExpenseAnalysis:
+    return ExpenseAnalysis(
+        description="Rewe groceries",
+        expense_total_amount_in_euros=12.5,
+        category="Lebensmitteleinkäufe",
+    )
+
+
 def _mock_revised_nutrition_analysis(
     correction_text: str,
     previous_analysis: NutritionAnalysis | dict,
@@ -349,6 +357,29 @@ def test_process_text_routes_to_nutrition_tracking_and_stores_record(tmp_path, m
     assert record.image_path == "text://2 croissants"
     assert record.analysis.calories == 460.0
     assert record.analysis.category == "food"
+
+
+def test_process_text_routes_to_expense_tracking_and_stores_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.agents.main_agent.route_text_workflow",
+        lambda text, metadata=None: TextRoutingDecision(workflow_type="expense_tracking"),
+    )
+    monkeypatch.setattr("src.agents.main_agent.analyze_expense_text", _mock_expense_text_analysis)
+    agent = PictoAgent(SqliteDatabase(tmp_path / "records.db"))
+
+    result = agent.process_text("12,50 EUR at Rewe")
+
+    assert result["workflow_type"] == "expense_tracking"
+    assert result["task_type"] == "expense"
+    assert result["record_id"]
+    assert result["analysis"]["expense_total_amount_in_euros"] == 12.5
+    assert result["analysis"]["category"] == "Lebensmitteleinkäufe"
+
+    record = agent.get_record(result["record_id"])
+    assert record is not None
+    assert record.task_type == "expense"
+    assert record.image_path == "text://12,50 EUR at Rewe"
+    assert record.analysis.description == "Rewe groceries"
 
 
 def test_process_text_routes_to_nutrition_correction(tmp_path, monkeypatch):
