@@ -135,9 +135,28 @@ def analyze_nutrition_text(text: str, metadata: Dict[str, Any] | None = None) ->
         "If the text is vague, make the best conservative estimate and use category='unknown' when needed. "
         "Tags should describe the overall meal or drink."
     )
-    user_text = _build_text_nutrition_user_text(text, metadata or {})
+    user_text = _build_text_tracking_user_text(text, metadata or {})
     analysis = _call_text_with_schema(prompt, user_text, NutritionAnalysis, "nutrition_text_analysis")
     return _normalize_text_nutrition_analysis(analysis)
+
+
+def analyze_expense_text(text: str, metadata: Dict[str, Any] | None = None) -> ExpenseAnalysis:
+    """Analyze a text-only expense entry and return a validated expense record."""
+    categories = ", ".join(EXPENSE_CATEGORIES)
+    prompt = (
+        "You are an expense tracking assistant. "
+        "The user is providing a text description of an expense to track, not a photo. "
+        "Extract one short description, the total amount in euros, "
+        f"and exactly one category from this list: {categories}. "
+        "If the user names a category loosely, mentions a shop, or writes in another language, map it to the "
+        "closest valid category from the allowed list. "
+        "Descriptions should stay short and practical, usually naming the merchant, purchase type, or purpose. "
+        "Interpret decimal commas and decimal points correctly and normalize the amount into euros. "
+        "Use 'Sonstige' only when nothing else fits. "
+        "Return only the structured result."
+    )
+    user_text = _build_text_tracking_user_text(text, metadata or {})
+    return _call_text_with_schema(prompt, user_text, ExpenseAnalysis, "expense_text_analysis")
 
 
 def revise_nutrition_analysis(
@@ -389,7 +408,7 @@ def _build_image_user_text(image_path: str, metadata: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _build_text_nutrition_user_text(text: str, metadata: Dict[str, Any]) -> str:
+def _build_text_tracking_user_text(text: str, metadata: Dict[str, Any]) -> str:
     return "\n".join(
         [
             f"User message: {text.strip()}",

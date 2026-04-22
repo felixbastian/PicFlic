@@ -4,6 +4,7 @@ from src.config import AppConfig
 from src.models import ExpenseAnalysis, NutritionAnalysis, NutritionCorrectionResult
 from src.openai_schema import build_strict_openai_schema
 from src.utils import (
+    analyze_expense_text,
     analyze_nutrition_image,
     analyze_nutrition_text,
     correct_nutrition_analysis,
@@ -164,6 +165,35 @@ def test_analyze_nutrition_text_normalizes_item_count_and_uses_user_message(monk
     assert "text description of food or drink" in captured["prompt"]
     assert "item_count to represent how many copies were consumed" in captured["prompt"]
     assert "User message: 2 croissants" in captured["user_text"]
+    assert 'Metadata: {"recent_history": []}' in captured["user_text"]
+
+
+def test_analyze_expense_text_uses_expense_prompt_and_user_message(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def _fake_call_text_with_schema(prompt, user_text, response_model, response_name):
+        captured["prompt"] = prompt
+        captured["user_text"] = user_text
+        captured["response_name"] = response_name
+        return ExpenseAnalysis.model_validate(
+            {
+                "description": "Rewe groceries",
+                "expense_total_amount_in_euros": 12.5,
+                "category": "Lebensmitteleinkäufe",
+            }
+        )
+
+    monkeypatch.setattr("src.utils._call_text_with_schema", _fake_call_text_with_schema)
+
+    result = analyze_expense_text("12,50 EUR at Rewe", metadata={"recent_history": []})
+
+    assert result.description == "Rewe groceries"
+    assert result.expense_total_amount_in_euros == 12.5
+    assert result.category == "Lebensmitteleinkäufe"
+    assert captured["response_name"] == "expense_text_analysis"
+    assert "text description of an expense to track" in captured["prompt"]
+    assert "Interpret decimal commas and decimal points correctly" in captured["prompt"]
+    assert "User message: 12,50 EUR at Rewe" in captured["user_text"]
     assert 'Metadata: {"recent_history": []}' in captured["user_text"]
 
 

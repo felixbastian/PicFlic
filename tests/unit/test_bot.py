@@ -308,7 +308,7 @@ def test_start_replies_with_welcome_message():
     asyncio.run(start(update, SimpleNamespace()))
 
     assert message.replies == [
-        "Hi! Send me a photo of your food or a receipt, or just text what you ate or drank, ask about your tracked expenses and nutrition, send me a French word to practice vocabulary, or tell me to save a recipe to your collection."
+        "Hi! Send me a photo of your food or a receipt, or text what you ate, drank, or spent, ask about your tracked expenses and nutrition, send me a French word to practice vocabulary, or tell me to save a recipe to your collection."
     ]
 
 
@@ -996,6 +996,58 @@ def test_handle_message_tracks_nutrition_from_text():
     assert message.reply_kwargs == [{"parse_mode": ParseMode.HTML}]
 
 
+def test_handle_message_tracks_expense_from_text():
+    message = _FakeMessage()
+    message.photo = []
+    message.text = "12,50 EUR at Rewe"
+    agent = _FakeAgent(
+        text_result={
+            "workflow_type": "expense_tracking",
+            "task_type": "expense",
+            "record_id": "expense-text-123",
+            "analysis": {
+                "description": "Rewe groceries",
+                "expense_total_amount_in_euros": 12.5,
+                "category": "Lebensmitteleinkäufe",
+            },
+        }
+    )
+    update = SimpleNamespace(
+        update_id=1024,
+        effective_user=SimpleNamespace(
+            id=42,
+            username="felix",
+            first_name="Felix",
+            last_name="Hans",
+        ),
+        message=message,
+    )
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={}), user_data={})
+    postgres_db = _FakePostgresDatabase()
+
+    asyncio.run(handle_message(update, context, agent, postgres_db))
+
+    assert agent.image_calls == []
+    assert agent.text_calls[0]["text"] == "12,50 EUR at Rewe"
+    assert postgres_db.expense_calls[0]["user_id"] == "user-123"
+    assert postgres_db.expense_calls[0]["analysis"].expense_total_amount_in_euros == 12.5
+    latest_result = get_latest_tracking_result(context)
+    assert latest_result is not None
+    assert latest_result["record_id"] == "expense-text-123"
+    assert latest_result["task_type"] == "expense"
+    latest_expense = get_latest_expense_result(context)
+    assert latest_expense is not None
+    assert latest_expense["record_id"] == "expense-text-123"
+    assert latest_expense["expense_id"] == "expense-123"
+    assert message.replies == [
+        "Expense added to the database.\n"
+        "Total: EUR 12.50\n"
+        "Category: Lebensmitteleinkäufe\n"
+        "Description: Rewe groceries"
+    ]
+    assert message.reply_kwargs == [{}]
+
+
 def test_handle_message_formats_multirow_query_results():
     message = _FakeMessage()
     message.photo = []
@@ -1126,7 +1178,7 @@ def test_handle_message_uses_friendly_sequence_on_second_consecutive_echo(monkey
     assert message.replies == [
         "Okay, I still don't get it, so let's try a different approach.",
         "This little reset might help. Tell me what you want in one short sentence, like "
-        "'track this meal', 'add this expense', or 'show my expenses this month'.",
+        "'track this meal', 'I spent 12 EUR at Rewe', or 'show my expenses this month'.",
         "I'm still with you, and we'll figure it out together 🙂",
     ]
     assert message.photos == ["https://example.com/friendly-reset.png"]

@@ -52,7 +52,7 @@ ECHO_FALLBACK_MESSAGE = (
 SECOND_ECHO_FALLBACK_MESSAGES = (
     "Okay, I still don't get it, so let's try a different approach.",
     "This little reset might help. Tell me what you want in one short sentence, like "
-    "'track this meal', 'add this expense', or 'show my expenses this month'.",
+    "'track this meal', 'I spent 12 EUR at Rewe', or 'show my expenses this month'.",
     "I'm still with you, and we'll figure it out together 🙂",
 )
 LOCAL_ECHO_FALLBACK_IMAGE = Path(__file__).resolve().parents[2] / "sample_images" / "echo_fallback.png"
@@ -246,6 +246,9 @@ async def _handle_text_workflow_result(
     if workflow_type == "expense_correction":
         await apply_expense_correction_workflow(update, context, agent, postgres_db, incoming_text, result)
         return
+    if workflow_type == "expense_tracking":
+        await _handle_expense_tracking_workflow(update, context, postgres_db, incoming_text, result)
+        return
     if workflow_type == "nutrition_correction":
         await apply_nutrition_correction_workflow(update, context, agent, postgres_db, incoming_text, result)
         return
@@ -324,6 +327,25 @@ async def _handle_nutrition_tracking_workflow(
     remember_latest_nutrition_result(context, result)
     clear_latest_expense_result(context)
     remember_text_turn(context, incoming_text, [response], workflow_type="nutrition_tracking")
+
+
+async def _handle_expense_tracking_workflow(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    postgres_db: Optional[PostgresDatabase],
+    incoming_text: str,
+    result: dict,
+) -> None:
+    persistence_note = None
+    if postgres_db is not None:
+        persistence_note = await persist_result(update, context, postgres_db, result)
+
+    response = format_result_response(result, persistence_note)
+    await update.message.reply_text(response)
+    remember_latest_tracking_result(context, result)
+    remember_latest_expense_result(context, result)
+    clear_latest_nutrition_result(context)
+    remember_text_turn(context, incoming_text, [response], workflow_type="expense_tracking")
 
 
 async def _handle_vocabulary_workflow(

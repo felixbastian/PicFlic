@@ -9,6 +9,7 @@ TextWorkflowType = Literal[
     "delete_latest_entry",
     "echo",
     "expense_correction",
+    "expense_tracking",
     "expense_query",
     "nutrition_correction",
     "nutrition_query",

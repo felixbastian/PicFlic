@@ -19,6 +19,7 @@ from ..query_utils import (
 )
 from ..utils import (
     analyze_expense_receipt,
+    analyze_expense_text,
     analyze_nutrition_image,
     analyze_nutrition_text,
     analyze_recipe_image,
@@ -99,6 +100,8 @@ class MainAgent:
         graph.add_node("build_delete_latest_entry", _build_delete_latest_entry)
         graph.add_node("build_expense_correction", _build_expense_correction)
         graph.add_node("build_expense_text_query", _build_expense_text_query)
+        graph.add_node("analyze_expense_text", _analyze_expense_text)
+        graph.add_node("store_expense_text_record", _store_expense_text_record)
         graph.add_node("build_nutrition_correction", _build_nutrition_correction)
         graph.add_node("build_nutrition_text_query", _build_nutrition_text_query)
         graph.add_node("analyze_nutrition_text", _analyze_nutrition_text)
@@ -113,6 +116,7 @@ class MainAgent:
             {
                 "delete_latest_entry": "build_delete_latest_entry",
                 "expense_correction": "build_expense_correction",
+                "expense_tracking": "analyze_expense_text",
                 "expense_query": "build_expense_text_query",
                 "nutrition_correction": "build_nutrition_correction",
                 "nutrition_query": "build_nutrition_text_query",
@@ -122,10 +126,12 @@ class MainAgent:
                 "echo": "echo_text",
             },
         )
+        graph.add_edge("analyze_expense_text", "store_expense_text_record")
         graph.add_edge("analyze_nutrition_text", "store_nutrition_text_record")
         graph.set_entry_point("load_text")
         graph.set_finish_point("build_delete_latest_entry")
         graph.set_finish_point("build_expense_correction")
+        graph.set_finish_point("store_expense_text_record")
         graph.set_finish_point("build_expense_text_query")
         graph.set_finish_point("build_nutrition_correction")
         graph.set_finish_point("build_nutrition_text_query")
@@ -340,6 +346,40 @@ def _build_expense_correction(state: _TextState, runtime: Any) -> dict:
         "analysis": analysis.to_dict(),
         "record_id": str(latest_result.get("record_id") or "").strip(),
         "expense_id": str(latest_result.get("expense_id") or "").strip(),
+    }
+
+
+def _analyze_expense_text(state: _TextState, runtime: Any) -> dict:
+    analysis = analyze_expense_text(state["text"], state.get("metadata"))
+    logger.info(
+        "Completed expense text analysis node",
+        extra={"event": "agent_expense_text_analysis", "analysis": analysis.to_dict()},
+    )
+    return {
+        "workflow_type": "expense_tracking",
+        "task_type": "expense",
+        "analysis": analysis.to_dict(),
+    }
+
+
+def _store_expense_text_record(state: _TextState, runtime: Any) -> dict:
+    db: SqliteDatabase = runtime.context["db"]
+    record = _store_tracking_record(_build_text_record_source(state["text"]), "expense", state["analysis"])
+    db.store_record(record)
+    logger.info(
+        "Stored text expense workflow record",
+        extra={
+            "event": "agent_record_stored",
+            "record_id": record.id,
+            "task_type": "expense",
+            "workflow_type": "expense_tracking",
+        },
+    )
+    return {
+        "workflow_type": "expense_tracking",
+        "task_type": "expense",
+        "analysis": record.analysis.to_dict(),
+        "record_id": record.id,
     }
 
 
