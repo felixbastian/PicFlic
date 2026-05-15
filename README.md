@@ -108,33 +108,62 @@ For production deployment on Google Cloud Run, use webhook-based updates instead
 
 Now Telegram will send updates to your Cloud Run service via POST requests to the webhook endpoint.
 
-## Cloud SQL on Cloud Run
+## PostgreSQL Database (Self-hosted)
 
-The API can connect to PostgreSQL on Cloud SQL from Cloud Run using the built-in Cloud SQL socket mount. Set these environment variables:
+The API connects to a self-hosted PostgreSQL instance running on a GCP e2-micro VM (free tier). Set these environment variables on Cloud Run:
 
 ```bash
 DB_USER=app_user
 DB_PASSWORD=your_database_password
 DB_NAME=app_db
-INSTANCE_CONNECTION_NAME=your-gcp-project:your-region:your-instance
+DB_HOST=<vm-external-ip>
+DB_PORT=5432
 ```
 
-For this project, the current instance connection name is:
+When deploying to Cloud Run:
 
 ```bash
-INSTANCE_CONNECTION_NAME=picflic-490614:europe-west1:picflic-database
-```
-
-When deploying to Cloud Run, attach the Cloud SQL instance:
-
-```bash
-gcloud run deploy picflic-cloud-run \
+gcloud run services update picflic-cloud-run \
   --region europe-west1 \
-  --add-cloudsql-instances picflic-490614:europe-west1:picflic-database \
-  --set-env-vars DB_USER=app_user,DB_NAME=app_db,INSTANCE_CONNECTION_NAME=picflic-490614:europe-west1:picflic-database
+  --update-env-vars DB_USER=app_user,DB_NAME=app_db,DB_HOST=<vm-external-ip>,DB_PORT=5432
 ```
 
 Pass `DB_PASSWORD` as a secret rather than committing it to the repo.
+
+The VM runs PostgreSQL 14 on Ubuntu 22.04 in `us-central1-a` (GCP free tier). The schema is managed via the migration scripts in `src/db/migrations/`.
+
+### Connecting to the database manually
+
+SSH into the VM:
+
+```bash
+gcloud compute ssh picflic-db --zone=us-central1-a
+```
+
+Then connect to Postgres:
+
+```bash
+psql -h 127.0.0.1 -U app_user -d app_db
+```
+
+Useful queries:
+
+```sql
+-- list all tables
+\dt
+
+-- show the most recent consumption entry
+SELECT * FROM fact_consumption ORDER BY created_at DESC LIMIT 1;
+
+-- show the most recent vocabulary entry
+SELECT * FROM fact_vocabulary ORDER BY created_at DESC LIMIT 1;
+```
+
+Or run a one-liner without entering the interactive shell:
+
+```bash
+psql -h 127.0.0.1 -U app_user -d app_db -c "SELECT * FROM fact_consumption ORDER BY created_at DESC LIMIT 1;"
+```
 
 ## Local Dev Bot
 
@@ -148,7 +177,7 @@ cp .env.devbot.example .env.devbot
 scripts/start_local_test_stack.sh
 ```
 
-This starts the local API, the optional Cloud SQL proxy, a `cloudflared` tunnel, and the Telegram webhook in one go so you can test the real webhook path locally without pushing a Cloud Run deployment.
+This starts the local API, a `cloudflared` tunnel, and the Telegram webhook in one go so you can test the real webhook path locally without pushing a Cloud Run deployment.
 Keep `.env.devbot` on the dev-only bot tokens so local webhook tests never overwrite the production bots.
 
 8. Call the API:

@@ -8,3 +8,5 @@ src/*.pyc
 .venv/
 data/pictoagent-devbot.db
 logs/
+*.dump
+*.sql
