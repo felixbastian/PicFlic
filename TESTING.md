@@ -35,11 +35,11 @@ Use the dedicated Telegram test bot locally so you can exercise the webhook flow
    - keep the `DevVocabTrainBot` token in `VOCAB_TELEGRAM_BOT_TOKEN`
    - keep `VOCAB_TELEGRAM_BOT_USERNAME=DevVocabTrainBot`
    - set `PICTOAGENT_REVIEW_JOB_SECRET` if you want to trigger the vocabulary review job endpoint  locally
-   - if you want local `fact_consumption` writes, also set:
+   - if you want local database writes, also set:
      - `DB_USER`
      - `DB_PASSWORD`
      - `DB_NAME`
-     - `DB_HOST`
+     - `DB_HOST` — external IP of the self-hosted PostgreSQL VM
      - `DB_PORT`
 
 3. Start everything with one command:
@@ -50,7 +50,6 @@ Use the dedicated Telegram test bot locally so you can exercise the webhook flow
 
 That script:
 
-- starts the Cloud SQL Auth Proxy when your local DB settings point at `127.0.0.1`
 - starts the local FastAPI app
 - starts `cloudflared`
 - waits until the public `/health` endpoint is reachable
@@ -60,7 +59,6 @@ That script:
 - also updates stable symlinks at:
   - `./logs/local-test-stack/app.log`
   - `./logs/local-test-stack/cloudflared.log`
-  - `./logs/local-test-stack/cloudsql-proxy.log`
 
 Press `Ctrl+C` to stop the stack again.
 
@@ -75,10 +73,6 @@ tail -f logs/local-test-stack/app.log
 If you want to run the pieces separately instead, use the steps below.
 
 1. Start the local webhook server:
-
-   ```bash
-   ./src/db/cloud-sql-proxy picflic-490614:europe-west1:picflic-database --port 5432
-   ```
 
    ```bash
    scripts/run_local_test_bot.sh
